@@ -2432,43 +2432,334 @@ class DocParser {
         return finalAttributedString
     }
     
-    // MARK: - 表格处理 (Table Processing - 基础文本提取)
-    // 将表格内容提取为纯文本，单元格间用制表符(\t)分隔，行间用换行符(\n)分隔。
-    // 注意：这不会保留表格的视觉边框或复杂布局。
+    // MARK: - 表格处理 (Table Processing - 结构化)
+    // 将表格XML解析为 TableDrawingData 对象，并将其附加到特殊的NSAttributedString上
     private func processTable(tableXML: XMLNode) throws -> NSAttributedString {
-        let tableAttributedString = NSMutableAttributedString()
-        // print("解析表格...")
-        // 遍历表格中的每一行 <w:tr>
-        for row in tableXML["w:tr"].all {
-            // 遍历行中的每一个单元格 <w:tc>
-            for (cellIndex, cell) in row["w:tc"].all.enumerated() {
-                // 处理单元格内的内容 (通常是段落 <w:p>)
-                for contentElement in cell.children {
-                     if contentElement.element?.name == "w:p" { // 如果是段落
-                         let paraString = try processParagraph(paragraphXML: contentElement)
-                         // 在添加制表符前，移除段落末尾可能由processParagraph添加的换行符
-                         if paraString.length > 0 && paraString.string.hasSuffix("\n") {
-                             tableAttributedString.append(paraString.attributedSubstring(from: NSRange(location: 0, length: paraString.length - 1)))
-                         } else {
-                             tableAttributedString.append(paraString)
-                         }
-                     }
-                     // TODO: 添加对单元格内其他潜在内容类型（如嵌套表格）的处理
-                }
-                // 如果不是行中的最后一个单元格，则添加制表符作为分隔
-                if cellIndex < row["w:tc"].all.count - 1 {
-                    tableAttributedString.append(NSAttributedString(string: "\t"))
+        var columnWidthsTwips: [CGFloat] = []      // 列宽 (单位: Twips)。Twip (Twentieth of a Point) 是Word中常用的长度单位，1 Point = 20 Twips。
+        var defaultTableBorders = TableBorders()   // 表格的默认边框设置，从 <w:tblPr><w:tblBorders> 解析。
+        var tableIndentationTwips: CGFloat = 0     // 表格整体的左侧缩进 (单位: Twips)，从 <w:tblInd> 解析。
+
+        // 1. 解析表格网格定义 (<w:tblGrid>) 以获取各列的建议宽度。
+        //    <w:tblGrid> 包含一系列 <w:gridCol w:w="widthInTwips"/> 元素。
+        if let tblGridElement = tableXML["w:tblGrid"].element { // 获取 <w:tblGrid> 对应的 XMLElement
+            for childContent in tblGridElement.children { // 遍历 <w:tblGrid> 的所有子节点
+                if let gridColElement = childContent as? XMLElement, gridColElement.name == "w:gridCol" { // 确保子节点是 <w:gridCol> 元素
+                    let gridColIndexer = XMLIndexer(gridColElement) // 将 XMLElement 包装成 XMLIndexer 以方便访问属性
+                    if let wStr = gridColIndexer.attributeValue(by: "w:w"), let w = Double(wStr) { // 获取 w:w 属性值 (宽度，Twips)
+                        columnWidthsTwips.append(CGFloat(w))
+                    } else {
+                        // 如果 <w:gridCol> 没有指定宽度，则使用一个默认值。
+                        // Word 通常会确保指定，但作为健壮性处理。
+                        columnWidthsTwips.append(2160) // 2160 Twips 约等于 1.5英寸 或 108磅，一个常见的默认列宽。
+                    }
                 }
             }
-            tableAttributedString.append(NSAttributedString(string: "\n")) // 每行结束后添加换行符
         }
-        // 清理：如果表格内容提取后以换行符结尾，移除它。
-         if tableAttributedString.length > 0 && tableAttributedString.string.hasSuffix("\n") {
-             tableAttributedString.deleteCharacters(in: NSRange(location: tableAttributedString.length - 1, length: 1))
-         }
-        return tableAttributedString
+
+        // 如果文档中没有提供 <w:tblGrid> (这对于有效的OOXML来说很少见)，
+        // 则尝试根据第一行实际的单元格数量和它们的列合并情况来估算列数和平均列宽。
+        if columnWidthsTwips.isEmpty {
+            if let firstRowIndexer = tableXML["w:tr"].all.first, // 安全地获取第一个 <w:tr> 的 XMLIndexer
+               let firstRowElement = firstRowIndexer.element { // 获取 <w:tr> 的 XMLElement
+                
+                // 获取第一行中所有的 <w:tc> (单元格) 元素
+                let cellElements = firstRowElement.children.compactMap { $0 as? XMLElement }.filter { $0.name == "w:tc" }
+
+                if !cellElements.isEmpty {
+                    // 计算第一行的总逻辑列数，考虑每个单元格的 <w:gridSpan> (列合并)
+                    let estimatedColumnCount = cellElements.reduce(0) { count, cellElement in
+                        let cellIndexer = XMLIndexer(cellElement) // 包装 XMLElement
+                        let spanStr = cellIndexer["w:tcPr"]["w:gridSpan"].attributeValue(by: "w:val") // 获取列合并值
+                        return count + (Int(spanStr ?? "1") ?? 1) // 如果没有指定或无效，则默认为1
+                    }
+                    
+                    if estimatedColumnCount > 0 {
+                        // 将页面宽度的90%均分给估算出的列数
+                        let avgWidthTwips = (DocxConstants.defaultPDFPageRect.width * 0.9 * 20.0) / CGFloat(estimatedColumnCount) // 页面宽度(磅) * 0.9 * 20 (磅转Twips) / 列数
+                        columnWidthsTwips = Array(repeating: avgWidthTwips, count: estimatedColumnCount)
+                        print("警告: 表格缺少 <w:tblGrid>。正在根据第一行估算 \(estimatedColumnCount) 列宽度。")
+                    } else {
+                         // 如果估算的列数为0 (不太可能，但作为防御)，则按单列处理
+                         columnWidthsTwips = [DocxConstants.defaultPDFPageRect.width * 0.9 * 20.0]
+                         print("警告: 表格第一行无法确定列数。使用单宽列。")
+                    }
+                } else {
+                    // 如果第一行没有单元格，也按单列处理
+                    columnWidthsTwips = [DocxConstants.defaultPDFPageRect.width * 0.9 * 20.0]
+                    print("警告: 表格第一行无单元格或无法解析列数。使用单宽列。")
+                }
+            } else {
+                // 如果表格连行都没有，或无法解析第一行，则按单列处理
+                columnWidthsTwips = [DocxConstants.defaultPDFPageRect.width * 0.9 * 20.0]
+                print("警告: 表格无行或无法解析列数。使用单宽列。")
+            }
+        }
+        // 将所有列宽从 Twips 单位转换为 Points 单位，因为PDF绘制通常使用Points。
+        let columnWidthsPoints = columnWidthsTwips.map { $0 / 20.0 }
+
+        // 2. 解析表格级别的属性 (<w:tblPr>)
+        let tblPrIndexer = tableXML["w:tblPr"] // 获取 <w:tblPr> 的 XMLIndexer
+        if tblPrIndexer.element != nil { // 检查 <w:tblPr> 是否存在
+            // 解析表格的默认边框设置 (<w:tblBorders>)
+            let tblBordersIndexer = tblPrIndexer["w:tblBorders"] // 获取 <w:tblBorders> 的 XMLIndexer
+            if tblBordersIndexer.element != nil {
+                // 调用辅助函数 parseBorderElement 分别解析上、下、左、右、内部水平、内部垂直边框
+                defaultTableBorders.top = parseBorderElement(tblBordersIndexer["w:top"])
+                defaultTableBorders.left = parseBorderElement(tblBordersIndexer["w:left"])
+                defaultTableBorders.bottom = parseBorderElement(tblBordersIndexer["w:bottom"])
+                defaultTableBorders.right = parseBorderElement(tblBordersIndexer["w:right"])
+                defaultTableBorders.insideHorizontal = parseBorderElement(tblBordersIndexer["w:insideH"])
+                defaultTableBorders.insideVertical = parseBorderElement(tblBordersIndexer["w:insideV"])
+            }
+            // 解析表格的左侧缩进 (<w:tblInd w:w="widthInTwips" w:type="dxa">)
+            let tblIndIndexer = tblPrIndexer["w:tblInd"] // 获取 <w:tblInd> 的 XMLIndexer
+            if tblIndIndexer.element != nil, // 检查是否存在
+               let wStr = tblIndIndexer.attributeValue(by: "w:w"), let w = Double(wStr), // 获取宽度值
+               (tblIndIndexer.attributeValue(by: "w:type") == "dxa" || tblIndIndexer.attributeValue(by: "w:type") == nil /* dxa是默认类型 */ ) { // 检查类型是否为dxa (Twips)
+                tableIndentationTwips = CGFloat(w)
+            }
+            // TODO: 未来可以解析 <w:tblLook> 用于条件格式化 (如首行、末行、奇偶行/列的特殊样式) - 这部分逻辑较复杂。
+            // TODO: 未来可以解析 <w:tblStyle> 以应用来自 styles.xml 文件中定义的表格样式 - 这部分逻辑也较复杂。
+        }
+
+        var tableRowsData: [TableRowDrawingData] = [] // 用于存储解析出的每一行的数据
+        // 用于跟踪垂直合并 (vMerge) 的状态。键是逻辑列的索引，值是开始合并的那个单元格的数据。
+        var vMergeTracker: [Int: TableCellDrawingData] = [:]
+
+        // 3. 遍历并处理表格中的每一行 (<w:tr>)
+        for (rowIndex, rowXML) in tableXML["w:tr"].all.enumerated() { // rowXML 是当前行的 XMLIndexer
+            var cellsDataInCurrentRow: [TableCellDrawingData] = [] // 存储当前行解析出的所有单元格数据
+            var currentLogicalColumnIndex = 0 // 当前正在处理的逻辑列的起始索引 (考虑了前面单元格的列合并)
+
+            let trPrIndexer = rowXML["w:trPr"] // 获取当前行属性 <w:trPr> 的 XMLIndexer
+            var rowSpecifiedHeightPoints: CGFloat? = nil // 当前行指定的行高 (Points)
+            var isHeaderRow = false // 标记当前行是否为表头行
+
+            if trPrIndexer.element != nil { // 检查行属性是否存在
+                // 解析行高 (<w:trHeight w:val="heightInTwips" w:hRule="exact|atLeast|auto">)
+                let trHeightIndexer = trPrIndexer["w:trHeight"]
+                if trHeightIndexer.element != nil,
+                   let hStr = trHeightIndexer.attributeValue(by: "w:val"), let hValTwips = Double(hStr) {
+                    // w:hRule 属性 (exact, atLeast, auto) 决定了此高度是固定值、最小值还是自动计算。
+                    // 此处暂时简化，直接使用其值。
+                    rowSpecifiedHeightPoints = CGFloat(hValTwips) / 20.0 // Twips 转 Points
+                }
+                // 检查是否为表头行 (<w:tblHeader /> 标签存在即表示是)
+                if trPrIndexer["w:tblHeader"].element != nil {
+                    isHeaderRow = true
+                }
+                // TODO: 未来可以处理 <w:cantSplit/> (行不可跨页) 等其他行属性。
+            }
+
+            // 遍历并处理当前行中的每一个单元格 (<w:tc>)
+            for (cellXmlIndexInRow, cellXML) in rowXML["w:tc"].all.enumerated() { // cellXML 是当前单元格的 XMLIndexer
+                let cellContentAccumulator = NSMutableAttributedString() // 用于累积单元格内的所有内容
+                var cellBackgroundColor: UIColor? // 单元格背景色
+                var cellGridSpan = 1              // 单元格的列合并数量，默认为1 (不合并)
+                var cellVMergeStatus: VerticalMergeStatus = .none // 单元格的垂直合并状态，默认为无
+                var cellSpecificBorders = defaultTableBorders   // 单元格的边框，初始继承表格默认边框，可能被单元格自身定义覆盖
+                var cellMarginsPoints = UIEdgeInsets.zero     // 单元格的内边距 (Points)
+
+                // 解析单元格属性 (<w:tcPr>)
+                let tcPrIndexer = cellXML["w:tcPr"] // 获取当前单元格属性 <w:tcPr> 的 XMLIndexer
+                if tcPrIndexer.element != nil { // 检查单元格属性是否存在
+                    // 解析列合并 (<w:gridSpan w:val="numberOfColumnsToSpan">)
+                    if let gridSpanStr = tcPrIndexer["w:gridSpan"].attributeValue(by: "w:val"), let span = Int(gridSpanStr) {
+                        cellGridSpan = span
+                    }
+
+                    // 解析垂直合并 (<w:vMerge w:val="restart" /> 表示开始合并, <w:vMerge /> 表示继续合并)
+                    let vMergeIndexer = tcPrIndexer["w:vMerge"]
+                    if vMergeIndexer.element != nil {
+                        cellVMergeStatus = (vMergeIndexer.attributeValue(by: "w:val") == "restart") ? .restart : .continue
+                    } else {
+                        // 如果当前单元格没有 <w:vMerge> 标签，但 vMergeTracker 中记录了当前逻辑列正在合并，
+                        // 说明上一个单元格的垂直合并在此处结束。
+                        if vMergeTracker[currentLogicalColumnIndex] != nil {
+                             vMergeTracker.removeValue(forKey: currentLogicalColumnIndex) // 清除跟踪状态
+                        }
+                    }
+
+                    // 解析单元格底纹/背景色 (<w:shd w:val="clear" w:color="auto" w:fill="RRGGBBHexColor">)
+                    let shdIndexer = tcPrIndexer["w:shd"]
+                    if shdIndexer.element != nil,
+                       let fillHex = shdIndexer.attributeValue(by: "w:fill"), // 获取填充颜色
+                       fillHex.lowercased() != "auto", // "auto" 通常表示透明或继承
+                       let color = UIColor(hex: fillHex) { // 将十六进制颜色转换为 UIColor
+                        cellBackgroundColor = color
+                    }
+
+                    // 解析单元格特有的边框设置 (<w:tcBorders>)，这会覆盖从表格继承的默认边框
+                    let tcBordersIndexer = tcPrIndexer["w:tcBorders"]
+                    if tcBordersIndexer.element != nil {
+                        if tcBordersIndexer["w:top"].element != nil { cellSpecificBorders.top = parseBorderElement(tcBordersIndexer["w:top"]) }
+                        if tcBordersIndexer["w:left"].element != nil { cellSpecificBorders.left = parseBorderElement(tcBordersIndexer["w:left"]) }
+                        if tcBordersIndexer["w:bottom"].element != nil { cellSpecificBorders.bottom = parseBorderElement(tcBordersIndexer["w:bottom"]) }
+                        if tcBordersIndexer["w:right"].element != nil { cellSpecificBorders.right = parseBorderElement(tcBordersIndexer["w:right"]) }
+                        // 注意: OOXML还支持斜线边框 <w:tl2br/>, <w:tr2bl/>，此处未处理。
+                    }
+                    
+                    // 解析单元格内边距 (<w:tcMar>)，其子元素 <w:top>, <w:left> 等定义了各方向边距，单位是Twips。
+                    let tcMarIndexer = tcPrIndexer["w:tcMar"]
+                    if tcMarIndexer.element != nil {
+                        let twipsPerPoint: CGFloat = 20.0
+                        if let wStr = tcMarIndexer["w:top"].attributeValue(by: "w:w"), let w = Double(wStr) { cellMarginsPoints.top = CGFloat(w) / twipsPerPoint }
+                        if let wStr = tcMarIndexer["w:left"].attributeValue(by: "w:w"), let w = Double(wStr) { cellMarginsPoints.left = CGFloat(w) / twipsPerPoint }
+                        if let wStr = tcMarIndexer["w:bottom"].attributeValue(by: "w:w"), let w = Double(wStr) { cellMarginsPoints.bottom = CGFloat(w) / twipsPerPoint }
+                        if let wStr = tcMarIndexer["w:right"].attributeValue(by: "w:w"), let w = Double(wStr) { cellMarginsPoints.right = CGFloat(w) / twipsPerPoint }
+                    }
+                    // TODO: 未来可以解析单元格内容的垂直对齐方式 (<w:vAlign w:val="top|center|bottom">)。
+                }
+
+                // 解析单元格内的实际内容 (通常是段落 <w:p>，也可能是嵌套的表格 <w:tbl>)
+                if let tcElement = cellXML.element { // 获取 <w:tc> 的 XMLElement
+                    for contentNode in tcElement.children { // 遍历 <w:tc> 的所有子节点 (包括 <w:p>, <w:tbl>, 以及 <w:tcPr>等)
+                        if let contentElement = contentNode as? XMLElement { // 确保子节点是 XMLElement
+                            let contentIndexer = XMLIndexer(contentElement) // 包装成 XMLIndexer
+                            if contentElement.name == "w:p" { // 如果是段落
+                                 let paraString = try processParagraph(paragraphXML: contentIndexer) // 调用段落处理函数
+                                 cellContentAccumulator.append(paraString)
+                                 // 在单元格内，段落之间通常需要换行符分隔。
+                                 // 如果段落本身不以换行结束，且累积器中已有内容，则添加一个。
+                                 if !paraString.string.hasSuffix("\n") && cellContentAccumulator.length > 0 {
+                                     cellContentAccumulator.append(NSAttributedString(string: "\n"))
+                                 }
+                             } else if contentElement.name == "w:tbl" { // 如果是嵌套表格
+                                 let nestedTableAttrString = try processTable(tableXML: contentIndexer) // 递归调用表格处理函数
+                                 cellContentAccumulator.append(nestedTableAttrString)
+                                 // 嵌套表格后也需要一个换行符，因为它也是一个块级元素。
+                                 if !nestedTableAttrString.string.hasSuffix("\n") && cellContentAccumulator.length > 0 {
+                                     cellContentAccumulator.append(NSAttributedString(string: "\n"))
+                                 }
+                             }
+                             // <w:tcPr> (单元格属性) 节点作为 <w:tc> 的子节点存在，但它不是可视内容，已在前面处理过，此处忽略。
+                        }
+                    }
+                }
+                // 清理：如果单元格内容末尾因最后一个段落处理逻辑而多出一个换行符，则移除它。
+                if cellContentAccumulator.length > 0 && cellContentAccumulator.string.hasSuffix("\n") {
+                    cellContentAccumulator.deleteCharacters(in: NSRange(location: cellContentAccumulator.length - 1, length: 1))
+                }
+
+                // 创建当前单元格的数据对象
+                let currentCellData = TableCellDrawingData(
+                    content: cellContentAccumulator,        // 单元格内容
+                    borders: cellSpecificBorders,           // 单元格边框
+                    backgroundColor: cellBackgroundColor,   // 单元格背景色
+                    gridSpan: cellGridSpan,                 // 列合并数
+                    vMerge: cellVMergeStatus,               // 垂直合并状态
+                    margins: cellMarginsPoints,             // 内边距
+                    originalRowIndex: rowIndex,             // 原始行索引
+                    originalColIndex: currentLogicalColumnIndex // 原始逻辑列索引
+                )
+                cellsDataInCurrentRow.append(currentCellData) // 添加到当前行的数据列表中
+
+                // 更新垂直合并的跟踪状态
+                if cellVMergeStatus == .restart { // 如果此单元格是垂直合并的起始点
+                    // 记录这个起始单元格，它可能会跨越多列 (gridSpan)
+                    for i in 0..<cellGridSpan {
+                        vMergeTracker[currentLogicalColumnIndex + i] = currentCellData
+                    }
+                }
+                // 如果是 .continue，则不需要更新 tracker，因为它依赖于上面行的 .restart 单元格。
+                
+                currentLogicalColumnIndex += cellGridSpan // 将逻辑列索引前进当前单元格所占的列数
+            }
+            // 创建当前行的数据对象
+            tableRowsData.append(TableRowDrawingData(cells: cellsDataInCurrentRow,
+                                                     height: 0, // 实际行高将在PDF生成时根据内容计算
+                                                     specifiedHeight: rowSpecifiedHeightPoints, // 存储解析到的指定行高
+                                                     isHeaderRow: isHeaderRow)) // 标记是否为表头行
+        }
+
+        // 所有行和单元格处理完毕，创建最终的表格数据对象
+        let finalTableDrawingData = TableDrawingData(
+            rows: tableRowsData,                        // 所有行数据
+            columnWidthsPoints: columnWidthsPoints,     // 所有列的宽度 (Points)
+            defaultCellBorders: defaultTableBorders,    // 表格的默认边框
+            tableIndentation: tableIndentationTwips / 20.0 // 表格的左缩进 (Points)
+        )
+
+        // 创建一个特殊的 NSAttributedString，它只包含一个“对象替换字符”。
+        let finalAttributedString = NSMutableAttributedString(string: "\u{FFFC}") // U+FFFC OBJECT REPLACEMENT CHARACTER
+        
+        // 将我们精心解析和构建的 finalTableDrawingData 对象作为自定义属性，
+        // 附加到这个“对象替换字符”上。
+        // 这样，在后续的PDF生成阶段，当遇到这个字符时，我们就可以提取出表格数据并进行自定义绘制。
+        finalAttributedString.addAttribute(DocParser.tableDrawingDataAttributeKey,
+                                         value: finalTableDrawingData,
+                                         range: NSRange(location: 0, length: finalAttributedString.length)) // 范围是这个特殊字符本身
+        
+        // 注意：返回的这个 NSAttributedString 代表整个表格对象。
+        // 调用它的 processBody 函数通常会在这个表格对象之后添加一个换行符，
+        // 因为表格在文档流中表现为一个块级元素。所以这里不需要再画蛇添足地加 "\n"。
+        return finalAttributedString
     }
 
+    // 辅助函数：解析 <w:bdr> (border) XML 元素节点
+    private func parseBorderElement(_ borderXMLIndexer: XMLIndexer?) -> TableBorderInfo {
+        guard let node = borderXMLIndexer?.element else {
+            return .noBorder // 如果节点不存在，则无边框
+        }
+
+        // 如果存在 <w:bdr> 标签但其 "val" 属性为 "nil" 或 "none"，则表示无边框
+        let valAttr = node.attribute(by: "w:val")?.text.lowercased()
+        if valAttr == "nil" || valAttr == "none" {
+            return .noBorder
+        }
+
+        var borderInfo = TableBorderInfo.defaultBorder // 如果标签存在且val不是nil/none，则默认是单实线
+
+        // 解析边框样式 (w:val)
+        if let styleVal = valAttr {
+            switch styleVal {
+            case "single": borderInfo.style = .single
+            case "double": borderInfo.style = .double // 绘制时需要特殊处理
+            case "dashed": borderInfo.style = .dashed // 绘制时需要特殊处理
+            case "dotted": borderInfo.style = .dotted // 绘制时需要特殊处理
+            // TODO: 添加更多 OOXML 边框样式的处理，如 "thick", "wave", "inset", "outset" 等
+            default: borderInfo.style = .single // 未知样式也暂时视为单实线
+            }
+        } else {
+            // 如果 <w:top/> 这样的标签存在，但没有 w:val 属性，通常意味着默认的单实线边框
+            borderInfo.style = .single
+        }
+
+        // 解析边框宽度 (w:sz，单位是八分之一磅 1/8 pt)
+        if let szStr = node.attribute(by: "w:sz")?.text, let szEighthsOfPoint = Double(szStr) {
+            borderInfo.width = CGFloat(szEighthsOfPoint) / 8.0
+        } else {
+            // 如果未指定宽度，根据样式给一个默认值 (Word 经常对标准线条省略sz)
+            if borderInfo.style == .single { borderInfo.width = 0.5 } // 0.5pt 是常见的细实线
+            else if borderInfo.style == .double { borderInfo.width = 1.5 } // 双线通常整体稍宽
+            // 其他样式可能也需要默认宽度
+        }
+
+        // 解析边框颜色 (w:color，值为 "RRGGBB" 或 "auto")
+        if let colorHex = node.attribute(by: "w:color")?.text, colorHex.lowercased() != "auto" {
+            if let color = UIColor(hex: colorHex) {
+                borderInfo.color = color
+            } else {
+                borderInfo.color = .black // 无效的十六进制颜色值，回退到黑色
+            }
+        } else {
+            borderInfo.color = .black // "auto" 或未指定颜色，表示黑色
+        }
+
+        // 解析边框与内容的间距 (w:space，单位是磅 pt)
+        if let spaceStr = node.attribute(by: "w:space")?.text, let spacePoints = Double(spaceStr) {
+            borderInfo.space = CGFloat(spacePoints)
+        }
+        
+        // 如果最终计算出的宽度小于等于0，则视为无效边框（不绘制）
+        if borderInfo.width <= 0 {
+            return .noBorder
+        }
+
+        return borderInfo
+    }
+    
+    
     // MARK: - 段落处理 (Paragraph Processing)
     // 处理单个 <w:p> 元素，提取其文本运行、样式和内嵌对象。
     private func processParagraph(paragraphXML: XMLNode) throws -> NSAttributedString {
@@ -3150,7 +3441,9 @@ class DocParser {
                 currentY += imageBottomPadding // 在图片下方添加固定的额外间距
 
             // --- 处理文本段 ---
-            } else {
+            }
+            
+            else {
                 let textSegment = attributedString.attributedSubstring(from: range) // 获取当前属性段的富文本
                 let segmentString = textSegment.string // 获取纯字符串，用于判断是否为空白
 
@@ -3209,6 +3502,89 @@ class DocParser {
         return pdfData as Data // 返回PDF数据
     }
 }
+
+// MARK: - Table Data Structures (表格数据结构)
+extension DocParser {
+
+    // 表示垂直单元格合并的状态
+    enum VerticalMergeStatus: String {
+        case none       // 不是垂直合并的一部分
+        case restart    // 此单元格开始一个新的垂直合并
+        case `continue` // 此单元格继续一个已存在的垂直合并 (内容通常为空，由 restart 单元格填充)
+    }
+
+    // 表示单个边框线 (上, 左, 下, 右)
+    struct TableBorderInfo: Equatable {
+        enum Style: String {
+            case single     // 标准实线
+            case double     // 双线 (绘制时需特殊处理)
+            case dashed     // 虚线 (绘制时需特殊处理)
+            case dotted     // 点线 (绘制时需特殊处理)
+            case nilOrNone  // 无边框或显式指定为 "nil" / "none"
+            // ... 可以添加其他 OOXML 边框样式 (如: thick, wave 等)
+        }
+
+        var style: Style = .nilOrNone
+        var width: CGFloat = 0.5 // 点 (points) 为单位的默认宽度 (如果 style 不是 nil/none)
+        var color: UIColor = .black
+        var space: CGFloat = 0 // 内容与边框的间距 (点)
+
+        static let defaultBorder = TableBorderInfo(style: .single, width: 0.5, color: .black)
+        static let noBorder = TableBorderInfo(style: .nilOrNone)
+
+        // 判断此边框是否有效（需要绘制）
+        var isValid: Bool { style != .nilOrNone && width > 0 }
+    }
+
+    // 存储单元格或表格默认的四边边框信息
+    struct TableBorders {
+        var top: TableBorderInfo = .noBorder
+        var left: TableBorderInfo = .noBorder
+        var bottom: TableBorderInfo = .noBorder
+        var right: TableBorderInfo = .noBorder
+        // 对于表格级默认值，这些很重要:
+        var insideHorizontal: TableBorderInfo = .noBorder // 行之间的水平线
+        var insideVertical: TableBorderInfo = .noBorder   // 列之间的垂直线
+    }
+
+    // 存储单个单元格的绘制所需数据
+    struct TableCellDrawingData {
+        var content: NSAttributedString         // 解析后的单元格内容
+        var borders: TableBorders               // 此单元格最终解析的边框
+        var backgroundColor: UIColor?           // 背景色
+        var gridSpan: Int = 1                   // 列合并数量 (跨多少列)
+        var vMerge: VerticalMergeStatus = .none // 垂直合并状态
+        var verticalAlignment: NSTextAlignment = .natural // TODO: 实现真正的垂直对齐 (上/中/下)
+        var margins: UIEdgeInsets = .zero       // 单元格内边距 (来自 <w:tcMar>) (点)
+        // 用于布局:
+        var originalRowIndex: Int = 0           // 在原始表格中的行索引
+        var originalColIndex: Int = 0           // 在原始表格中的逻辑列索引（考虑了它前面的列的 gridSpan）
+    }
+
+    // 存储表格一行的绘制所需数据
+    struct TableRowDrawingData {
+        var cells: [TableCellDrawingData]
+        var height: CGFloat = 0         // 计算出的或指定的行高 (点)
+        var specifiedHeight: CGFloat?   // 从 <w:trHeight w:val="X"> 解析的指定行高 (点)，可能 hRule 是 "exact" 或 "atLeast"
+        var isHeaderRow: Bool = false   // 是否为表头行 (来自 <w:tblHeader/>)
+    }
+
+    // 存储整个表格的绘制所需数据
+    struct TableDrawingData {
+        var rows: [TableRowDrawingData]
+        var columnWidthsPoints: [CGFloat]    // 每列的宽度 (点)
+        var defaultCellBorders: TableBorders // 表格的默认单元格边框 (来自 <w:tblPr><w:tblBorders>)
+        var tableIndentation: CGFloat = 0    // 表格的左缩进 (点，来自 <w:tblInd w:w="X" w:type="dxa">)
+        // var preferredTableWidth: CGFloat? // TODO: 处理来自 <w:tblW> 的首选表格宽度 (点或百分比)
+        // let tableXMLElement: XMLIndexer // 可选：存储原始XML节点，用于调试或高级功能
+    }
+
+    // 自定义属性键，用于在 NSAttributedString 中存储 TableDrawingData
+    static let tableDrawingDataAttributeKey = NSAttributedString.Key("com.docparser.tableDrawingData")
+}
+
+
+
 
 // MARK: - UIColor 十六进制初始化器 (UIColor Hex Initializer)
 extension UIColor {
