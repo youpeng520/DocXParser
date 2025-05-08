@@ -3375,7 +3375,7 @@ class DocParser {
         // 创建PDF数据缓冲区和上下文
         let pdfData = NSMutableData()
         UIGraphicsBeginPDFContextToData(pdfData, pageRect, nil) // pageRect定义了PDF媒体框
-        defer { UIGraphicsEndPDFContext() } // 确保PDF上下文在函数结束时关闭
+//        defer { UIGraphicsEndPDFContext() } // 确保PDF上下文在函数结束时关闭
         
         // 开始PDF的第一页
         UIGraphicsBeginPDFPageWithInfo(pageRect, nil) // pageRect也用作页面尺寸
@@ -3389,7 +3389,6 @@ class DocParser {
 
         // 遍历NSAttributedString中的每个属性段
         attributedString.enumerateAttributes(in: NSRange(location: 0, length: attributedString.length), options: []) { attrs, range, _ in
-            
             // --- 处理图片附件 ---
             if let attachment = attrs[.attachment] as? NSTextAttachment, var imageToDraw = attachment.image {
                 let originalImageRef = imageToDraw // 保留原始图片引用，用于高质量缩放
@@ -3441,6 +3440,202 @@ class DocParser {
                 currentY += imageBottomPadding // 在图片下方添加固定的额外间距
 
             // --- 处理文本段 ---
+            } else if let tableData = attrs[DocParser.tableDrawingDataAttributeKey] as? DocParser.TableDrawingData {
+                guard let pdfContext = UIGraphicsGetCurrentContext() else {
+                    print("错误：绘制表格时没有PDF图形上下文。")
+                    currentY += 20 // 跳过一些空间
+                    return // 跳过此表格
+                }
+
+                let tableOriginX = leftMargin + tableData.tableIndentation
+                var currentTableContentY = currentY // 表格内容开始的Y坐标
+
+                // --- 简单的分页检查：如果表格起始位置太靠下，则换页 ---
+                // 注意：这只是一个非常粗略的检查，理想情况下应在计算完所有行高后，
+                // 或在绘制每一行之前进行更精确的分页判断。
+                let estimatedMinRowHeightPoints: CGFloat = 20 // 假设每行至少20pt高，用于初步分页
+                if currentTableContentY + estimatedMinRowHeightPoints > pageRect.height - bottomMargin && currentTableContentY > topMargin {
+                    startNewPage()
+                    currentTableContentY = topMargin
+                }
+                currentY = currentTableContentY // 更新全局的 currentY
+
+                // --- 列宽确定 ---
+                // 假设 columnWidthsPoints 已经是最终的绘制宽度。
+                // 实际应用中可能需要根据 tableTotalAvailableWidth 调整这些宽度 (例如按比例缩放)。
+                let columnWidths = tableData.columnWidthsPoints
+                let tableActualWidth = columnWidths.reduce(0, +)
+
+                // --- 存储计算出的行Y坐标和行高 ---
+                var calculatedRowYOrigins: [CGFloat] = []
+                var calculatedRowHeights: [CGFloat] = []
+
+                // --- 第一次遍历：计算每一行的实际高度 ---
+                for (rowIndex, rowData) in tableData.rows.enumerated() {
+                    var maxCellHeightInRowPoints: CGFloat = 0.0
+
+                    if let specifiedH = rowData.specifiedHeight, specifiedH > 0 {
+                        // 如果行高是精确指定的
+                        maxCellHeightInRowPoints = specifiedH
+                    } else {
+                        // 根据单元格内容计算行高
+                        for (cellIndexInRow, cellData) in rowData.cells.enumerated() {
+                            // 跳过被上方单元格垂直合并覆盖的单元格 (vMerge == .continue)
+                            if cellData.vMerge == .continue { continue }
+
+                            var currentCellWidthPoints: CGFloat = 0
+                            // 计算此单元格实际占据的宽度 (考虑列合并 gridSpan)
+                            for spanIdx in 0..<cellData.gridSpan {
+                                if (cellData.originalColIndex + spanIdx) < columnWidths.count {
+                                    currentCellWidthPoints += columnWidths[cellData.originalColIndex + spanIdx]
+                                }
+                            }
+                            // 减去单元格内部左右边距
+                            let contentWidth = max(1, currentCellWidthPoints - cellData.margins.left - cellData.margins.right)
+
+                            let textBoundingRect = cellData.content.boundingRect(
+                                with: CGSize(width: contentWidth, height: .greatestFiniteMagnitude),
+                                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                                context: nil
+                            )
+                            var currentCellRequiredHeightPoints = ceil(textBoundingRect.height)
+                            currentCellRequiredHeightPoints += (cellData.margins.top + cellData.margins.bottom) // 加上单元格内部上下边距
+                            
+                            // 如果此单元格是垂直合并的起始点，它的高度会影响多行，但此处计算的是它在“当前定义行”中所需的高度
+                            // 实际的绘制高度会在绘制阶段根据vMerge的跨度来确定
+                            maxCellHeightInRowPoints = max(maxCellHeightInRowPoints, currentCellRequiredHeightPoints)
+                        }
+                        maxCellHeightInRowPoints = max(maxCellHeightInRowPoints, estimatedMinRowHeightPoints) // 保证一个最小行高
+                    }
+                    calculatedRowHeights.append(max(maxCellHeightInRowPoints, estimatedMinRowHeightPoints)) // 保证一个最小行高
+                }
+
+
+                // --- 第二次遍历：绘制表格的每一行和单元格 ---
+                var currentDrawingCellX = tableOriginX
+
+                for (rowIndex, rowData) in tableData.rows.enumerated() {
+                    let currentRowHeightPoints = calculatedRowHeights[rowIndex]
+                    calculatedRowYOrigins.append(currentY) // 记录当前行的Y起始位置
+
+                    // --- 行级分页检查 ---
+                    if currentY + currentRowHeightPoints > pageRect.height - bottomMargin {
+                        if currentY > topMargin { // 只有当当前页不是新页的顶部时才换页
+                           startNewPage()
+                           currentY = topMargin
+                           calculatedRowYOrigins[rowIndex] = currentY // 更新换页后的Y起始位置
+                        }
+                        // 如果即使在新页面，单行还是太高，则可能会被截断。更复杂的行拆分未实现。
+                    }
+                    
+                    currentDrawingCellX = tableOriginX // 每行的起始X坐标重置
+
+                    for (cellIndexInRow, cellData) in rowData.cells.enumerated() {
+                        var cellDrawingWidthPoints: CGFloat = 0
+                        // 计算此单元格的绘制宽度 (考虑列合并 gridSpan)
+                        for spanIdx in 0..<cellData.gridSpan {
+                            if (cellData.originalColIndex + spanIdx) < columnWidths.count {
+                                cellDrawingWidthPoints += columnWidths[cellData.originalColIndex + spanIdx]
+                            }
+                        }
+                        if cellDrawingWidthPoints <= 0 { cellDrawingWidthPoints = 50 } // 避免宽度为0
+
+                        var cellDrawingHeightPoints = currentRowHeightPoints
+                        // 处理垂直合并单元格的绘制高度
+                        if cellData.vMerge == .restart {
+                            cellDrawingHeightPoints = 0 // 重置，然后累加其覆盖的行高
+                            for rIdx in rowIndex..<tableData.rows.count {
+                                let spannedRowData = tableData.rows[rIdx]
+                                // 找到被合并的单元格
+                                var currentLogicalColForSearch = 0
+                                var targetCellInSpannedRow: TableCellDrawingData? = nil
+                                for c_search in spannedRowData.cells {
+                                    if currentLogicalColForSearch == cellData.originalColIndex {
+                                        targetCellInSpannedRow = c_search
+                                        break
+                                    }
+                                    currentLogicalColForSearch += c_search.gridSpan
+                                }
+
+                                if let actualCellInSpannedRow = targetCellInSpannedRow,
+                                   (rIdx == rowIndex || actualCellInSpannedRow.vMerge == .continue) { // 是起始行，或者后续行是continue
+                                    cellDrawingHeightPoints += calculatedRowHeights[rIdx]
+                                } else {
+                                    break // 垂直合并结束
+                                }
+                            }
+                        } else if cellData.vMerge == .continue {
+                            // 此单元格被上方单元格覆盖，不绘制其背景和内容。
+                            // 但它的边框（特别是上边框）可能需要作为内部水平线绘制。
+                            // 这里简化处理：只绘制它的上边框（如果适用），然后跳到下一个单元格。
+
+                            let cellRectForContinue = CGRect(x: currentDrawingCellX, y: currentY, width: cellDrawingWidthPoints, height: currentRowHeightPoints)
+                            let resolvedTopBorder = resolveCellBorder(
+                                forEdge: .top, cellData: cellData, rowIndex: rowIndex, cellIndexInRow: cellIndexInRow,
+                                tableData: tableData, isFirstRowOfTable: rowIndex == 0, isFirstColOfRow: cellIndexInRow == 0
+                            )
+                            if resolvedTopBorder.isValid {
+                                drawBorderLine(context: pdfContext,
+                                               start: CGPoint(x: cellRectForContinue.minX, y: cellRectForContinue.minY),
+                                               end: CGPoint(x: cellRectForContinue.maxX, y: cellRectForContinue.minY),
+                                               borderInfo: resolvedTopBorder)
+                            }
+                            currentDrawingCellX += cellDrawingWidthPoints // 移动到下一个单元格的X位置
+                            continue // 跳过对此 .continue 单元格的其余绘制
+                        }
+
+
+                        let cellDrawingRect = CGRect(x: currentDrawingCellX,
+                                                     y: currentY,
+                                                     width: cellDrawingWidthPoints,
+                                                     height: cellDrawingHeightPoints)
+
+                        // 1. 绘制单元格背景色
+                        if let bgColor = cellData.backgroundColor {
+                            pdfContext.setFillColor(bgColor.cgColor)
+                            pdfContext.fill(cellDrawingRect)
+                        }
+
+                        // 2. 绘制单元格边框 (调用辅助函数来决定画哪条以及如何画)
+                        //    边框绘制顺序：上、左、下、右，以处理可能的覆盖关系
+                        let bordersToDraw = cellData.borders // 使用单元格自身解析的边框
+                        
+                        // 上边框
+                        let topBorder = resolveCellBorder(forEdge: .top, cellData: cellData, rowIndex: rowIndex, cellIndexInRow: cellIndexInRow, tableData: tableData, isFirstRowOfTable: rowIndex == 0, isFirstColOfRow: false)
+                        if topBorder.isValid {
+                            drawBorderLine(context: pdfContext, start: CGPoint(x: cellDrawingRect.minX, y: cellDrawingRect.minY), end: CGPoint(x: cellDrawingRect.maxX, y: cellDrawingRect.minY), borderInfo: topBorder)
+                        }
+                        // 左边框
+                        let leftBorder = resolveCellBorder(forEdge: .left, cellData: cellData, rowIndex: rowIndex, cellIndexInRow: cellIndexInRow, tableData: tableData, isFirstRowOfTable: false, isFirstColOfRow: cellData.originalColIndex == 0)
+                        if leftBorder.isValid {
+                             drawBorderLine(context: pdfContext, start: CGPoint(x: cellDrawingRect.minX, y: cellDrawingRect.minY), end: CGPoint(x: cellDrawingRect.minX, y: cellDrawingRect.maxY), borderInfo: leftBorder)
+                        }
+                        // 下边框 (只有当它是表格的最后一行，或者是被合并单元格的底部时，才使用单元格自身的bottom；否则使用insideH)
+                        let bottomBorder = resolveCellBorder(forEdge: .bottom, cellData: cellData, rowIndex: rowIndex, cellIndexInRow: cellIndexInRow, tableData: tableData, isFirstRowOfTable: false, isFirstColOfRow: false, isLastRowOfTable: (rowIndex == tableData.rows.count - 1) || (cellData.vMerge == .restart && (rowIndex + Int(cellDrawingHeightPoints / currentRowHeightPoints) - 1) >= tableData.rows.count - 1) )
+                        if bottomBorder.isValid {
+                            drawBorderLine(context: pdfContext, start: CGPoint(x: cellDrawingRect.minX, y: cellDrawingRect.maxY), end: CGPoint(x: cellDrawingRect.maxX, y: cellDrawingRect.maxY), borderInfo: bottomBorder)
+                        }
+                        // 右边框 (只有当它是表格的最后一列，或者是被合并单元格的右部时，才使用单元格自身的right；否则使用insideV)
+                        let rightBorder = resolveCellBorder(forEdge: .right, cellData: cellData, rowIndex: rowIndex, cellIndexInRow: cellIndexInRow, tableData: tableData, isFirstRowOfTable: false, isFirstColOfRow: false, isLastColOfTable: (cellData.originalColIndex + cellData.gridSpan >= columnWidths.count))
+                        if rightBorder.isValid {
+                            drawBorderLine(context: pdfContext, start: CGPoint(x: cellDrawingRect.maxX, y: cellDrawingRect.minY), end: CGPoint(x: cellDrawingRect.maxX, y: cellDrawingRect.maxY), borderInfo: rightBorder)
+                        }
+
+
+                        // 3. 绘制单元格内容 (文本、嵌套图片等)
+                        let contentRect = cellDrawingRect.inset(by: cellData.margins) // 应用单元格内边距
+                        if contentRect.width > 0 && contentRect.height > 0 {
+                            cellData.content.draw(in: contentRect)
+                        }
+                        
+                        currentDrawingCellX += cellDrawingWidthPoints // 移动到下一个单元格的X位置
+                    }
+                    currentY += currentRowHeightPoints // 移动到下一行的Y位置
+                }
+                // 表格绘制完毕，添加一些底部间距
+                currentY += DocxConstants.pdfLineSpacingAfterVisibleText // 或一个特定的表格后间距
+            
+            // --- 结束表格处理 ---
             }
             
             else {
@@ -3483,7 +3678,7 @@ class DocParser {
                 // 所以不再添加 lineSpacingAfterVisibleText (特别是当该常量为0时，无影响)。
             }
         } // 结束 enumerateAttributes 遍历
-
+        UIGraphicsEndPDFContext() // 确保PDF上下文在函数结束时关闭
         // 验证生成的PDF数据是否为空
         guard pdfData.length > 0 else {
             throw DocParserError.pdfGenerationFailed("处理完成后，生成的PDF数据为空。")
@@ -3499,8 +3694,14 @@ class DocParser {
                 throw DocParserError.pdfSavingFailed(error)
             }
         }
+        guard pdfData.length > 0 else {
+            print("错误：最终生成的 PDF 数据为空！") // 添加打印
+            throw DocParserError.pdfGenerationFailed("处理完成后，生成的PDF数据为空。")
+        }
+        print("--- generatePDF: 最终 PDF 数据长度: \(pdfData.length) ---") // 打印最终大小
         return pdfData as Data // 返回PDF数据
     }
+    
 }
 
 // MARK: - Table Data Structures (表格数据结构)
@@ -3581,6 +3782,102 @@ extension DocParser {
 
     // 自定义属性键，用于在 NSAttributedString 中存储 TableDrawingData
     static let tableDrawingDataAttributeKey = NSAttributedString.Key("com.docparser.tableDrawingData")
+    
+    
+    // 辅助函数：根据上下文决定实际要绘制的边框信息
+    private enum BorderEdge { case top, left, bottom, right }
+        // 这个函数需要非常小心地处理边框冲突和优先级
+        private func resolveCellBorder(
+            forEdge edge: BorderEdge,
+            cellData: TableCellDrawingData,
+            rowIndex: Int,
+            cellIndexInRow: Int, // cellData在当前rowData.cells中的索引
+            tableData: TableDrawingData,
+            isFirstRowOfTable: Bool,
+            isFirstColOfRow: Bool, // 这个指的是cellData是否为rowData.cells的第一个元素
+            isLastRowOfTable: Bool = false, // 是否为表格的最后一行（或被vMerge覆盖到最后一行）
+            isLastColOfTable: Bool = false  // 是否为表格的最后一列（或被gridSpan覆盖到最后一列）
+        ) -> TableBorderInfo {
+
+            let cellBorders = cellData.borders
+            let defaultBorders = tableData.defaultCellBorders
+
+            switch edge {
+            case .top:
+                // 如果是表格的第一行，或者上面单元格是vMerge.continue（意味着一个合并块刚结束），则使用单元格自身的上边框
+                // 否则（即内部行），使用 "insideH" 和相邻（上一行）单元格 "bottom" 中更强的那个。
+                // 如果单元格自身指定了上边框，则优先使用它。
+                if cellBorders.top.style != .nilOrNone { return cellBorders.top } // 单元格指定了就用它的
+                if isFirstRowOfTable { return defaultBorders.top.style != .nilOrNone ? defaultBorders.top : cellBorders.top } // 表格首行用表格默认上边框
+                 // 内部行，优先用表格的 insideH
+                return defaultBorders.insideHorizontal.style != .nilOrNone ? defaultBorders.insideHorizontal : TableBorderInfo.noBorder
+
+
+            case .left:
+                // 如果是行的第一列（考虑gridSpan，应该是originalColIndex == 0），则使用单元格自身的左边框
+                // 否则（即内部列），使用 "insideV" 和相邻（左边）单元格 "right" 中更强的那个。
+                // 如果单元格自身指定了左边框，则优先使用它。
+                if cellBorders.left.style != .nilOrNone { return cellBorders.left }
+                if cellData.originalColIndex == 0 { return defaultBorders.left.style != .nilOrNone ? defaultBorders.left : cellBorders.left }
+                return defaultBorders.insideVertical.style != .nilOrNone ? defaultBorders.insideVertical : TableBorderInfo.noBorder
+
+            case .bottom:
+                if cellBorders.bottom.style != .nilOrNone { return cellBorders.bottom }
+                if isLastRowOfTable { return defaultBorders.bottom.style != .nilOrNone ? defaultBorders.bottom : cellBorders.bottom }
+                return defaultBorders.insideHorizontal.style != .nilOrNone ? defaultBorders.insideHorizontal : TableBorderInfo.noBorder
+
+            case .right:
+                if cellBorders.right.style != .nilOrNone { return cellBorders.right }
+                if isLastColOfTable { return defaultBorders.right.style != .nilOrNone ? defaultBorders.right : cellBorders.right }
+                return defaultBorders.insideVertical.style != .nilOrNone ? defaultBorders.insideVertical : TableBorderInfo.noBorder
+            }
+            // 此处简化：如果单元格自己有定义，就用自己的。否则根据位置用表格默认的外部或内部边框。
+            // 更完善的逻辑会比较相邻单元格的边框，取“更显著”的那个（例如更粗的线）。
+        }
+
+
+        // 辅助函数：绘制单条边框线
+        private func drawBorderLine(context: CGContext, start: CGPoint, end: CGPoint, borderInfo: TableBorderInfo) {
+            guard borderInfo.isValid else { return }
+
+            context.saveGState()
+            context.setStrokeColor(borderInfo.color.cgColor)
+            context.setLineWidth(borderInfo.width)
+
+            // 处理虚线、点线等样式 (非常基础的实现)
+            switch borderInfo.style {
+            case .dashed:
+                // 虚线长度通常是线宽的几倍，例如 3倍线宽的实线，3倍线宽的空白
+                let dashPattern: [CGFloat] = [borderInfo.width * 3, borderInfo.width * 3]
+                context.setLineDash(phase: 0, lengths: dashPattern)
+            case .dotted:
+                // 点线可以看作是线宽长度的实线，线宽长度的空白
+                let dotPattern: [CGFloat] = [borderInfo.width, borderInfo.width]
+                context.setLineDash(phase: 0, lengths: dotPattern)
+            case .double:
+                // 双线需要绘制两条平行的细线。这里简化为绘制一条稍粗的线，或者需要更复杂的偏移绘制。
+                // 暂时画一条线，宽度可能是原始指定宽度，颜色是指定的颜色
+                // 若要画两条，需要计算偏移，如：
+                // context.setLineWidth(borderInfo.width / 3) // 每条线是总宽度的1/3
+                // let offset = borderInfo.width / 3
+                // context.move(to: CGPoint(x: start.x, y: start.y - offset))
+                // context.addLine(to: CGPoint(x: end.x, y: end.y - offset))
+                // context.strokePath()
+                // context.move(to: CGPoint(x: start.x, y: start.y + offset))
+                // context.addLine(to: CGPoint(x: end.x, y: end.y + offset))
+                // context.strokePath()
+                // context.restoreGState()
+                // return // 双线绘制完成
+                break // 默认处理单线
+            default: // .single, .nilOrNone (已在isValid中过滤)
+                break
+            }
+
+            context.move(to: start)
+            context.addLine(to: end)
+            context.strokePath()
+            context.restoreGState()
+        }
 }
 
 
@@ -3690,3 +3987,360 @@ extension String {
          return String(self[range]) // 返回子字符串
      }
 }
+
+
+
+/*****************************************8888888888888888888888888888888*/
+//func generatePDFWithCustomLayout(
+//    attributedString: NSAttributedString,
+//    outputPathURL: URL? = nil
+//) throws -> Data {
+//    // 验证输入
+//    guard attributedString.length > 0 else {
+//        throw DocParserError.pdfGenerationFailed("输入的 NSAttributedString 为空，无法生成PDF。")
+//    }
+//
+//    // 从常量获取PDF页面和边距设置
+//    let pageRect = DocxConstants.defaultPDFPageRect
+//    let topMargin = DocxConstants.defaultPDFMargins.top
+//    let bottomMargin = DocxConstants.defaultPDFMargins.bottom
+//    let leftMargin = DocxConstants.defaultPDFMargins.left
+//    let rightMargin = DocxConstants.defaultPDFMargins.right
+//
+//    // 从常量获取自定义间距设置
+//    let lineSpacingAfterVisibleText = DocxConstants.pdfLineSpacingAfterVisibleText
+//    let imageBottomPadding = DocxConstants.pdfImageBottomPadding
+//
+//    // 计算可打印区域的尺寸
+//    let printableWidth = pageRect.width - leftMargin - rightMargin
+//    let printablePageHeight = pageRect.height - topMargin - bottomMargin // 单个页面的最大可打印高度
+//
+//    // 创建PDF数据缓冲区和上下文
+//    let pdfData = NSMutableData()
+//    UIGraphicsBeginPDFContextToData(pdfData, pageRect, nil) // pageRect定义了PDF媒体框
+//    defer { UIGraphicsEndPDFContext() } // 确保PDF上下文在函数结束时关闭
+//    
+//    // 开始PDF的第一页
+//    UIGraphicsBeginPDFPageWithInfo(pageRect, nil) // pageRect也用作页面尺寸
+//    var currentY: CGFloat = topMargin // 初始化当前绘制的Y坐标
+//
+//    // 辅助函数：开始一个新页面并重置Y坐标
+//    func startNewPage() {
+//        UIGraphicsBeginPDFPageWithInfo(pageRect, nil)
+//        currentY = topMargin
+//    }
+//
+//    // 遍历NSAttributedString中的每个属性段
+//    attributedString.enumerateAttributes(in: NSRange(location: 0, length: attributedString.length), options: []) { attrs, range, _ in
+//        // --- 处理图片附件 ---
+//        if let attachment = attrs[.attachment] as? NSTextAttachment, var imageToDraw = attachment.image {
+//            let originalImageRef = imageToDraw // 保留原始图片引用，用于高质量缩放
+//            var currentImageSize = imageToDraw.size // 获取图片当前（可能已通过NSTextAttachment.bounds设置）尺寸
+//
+//            // 步骤 1: 如果图片宽度超过可打印宽度，则按比例缩放以适应宽度
+//            if currentImageSize.width > printableWidth {
+//                let scaleFactor = printableWidth / currentImageSize.width
+//                currentImageSize = CGSize(width: printableWidth, height: currentImageSize.height * scaleFactor)
+//            }
+//            // 步骤 2: 如果（可能已按宽度缩放后）图片高度仍超过可打印页面高度，则再次按比例缩放以适应高度
+//            if currentImageSize.height > printablePageHeight {
+//                let scaleFactor = printablePageHeight / currentImageSize.height
+//                // 注意：这次缩放是基于上一步可能已改变的宽度，所以宽度也会相应缩小
+//                currentImageSize = CGSize(width: currentImageSize.width * scaleFactor, height: printablePageHeight)
+//            }
+//            
+//            // 如果计算出的最终尺寸与图片当前尺寸不同，则重新绘制图片到该尺寸
+//            // 这是为了确保我们绘制的是按最终目标尺寸渲染的图片，而不是依赖UIImage的draw(in:)的自动缩放
+//            if imageToDraw.size != currentImageSize && currentImageSize.width > 0 && currentImageSize.height > 0 {
+//                UIGraphicsBeginImageContextWithOptions(currentImageSize, false, 0.0) // false表示不透明, 0.0表示使用设备scale
+//                originalImageRef.draw(in: CGRect(origin: .zero, size: currentImageSize)) // 从原始图片绘制到新尺寸
+//                imageToDraw = UIGraphicsGetImageFromCurrentImageContext() ?? originalImageRef // 获取缩放后的图片
+//                UIGraphicsEndImageContext()
+//            }
+//
+//            // 检查当前页面是否有足够空间绘制此最终缩放后的图片
+//            // currentY 是当前可以开始绘制的Y点。 imageToDraw.size.height 是图片需要的高度。
+//            // pageRect.height - bottomMargin 是页面底部边距的上边界。
+//            if currentY + imageToDraw.size.height > pageRect.height - bottomMargin {
+//                // 如果图片放不下，并且当前不是在页面顶部（即页面上已有内容），则换页
+//                if currentY > topMargin {
+//                    startNewPage()
+//                }
+//                // 如果即使在新页面顶部，图片还是太高（这理论上不应发生，因为已缩放到printablePageHeight），
+//                // 则图片可能会被截断，或者我们需要更复杂的错误处理。
+//                // 目前，我们假设缩放已确保它适合新页面。
+//            }
+//            
+//            // 绘制最终缩放后的图片
+//            if imageToDraw.size.height > 0 { // 确保图片有实际高度才绘制
+//                let imageDrawRect = CGRect(x: leftMargin, // 图片左边距
+//                                           y: currentY,     // 当前Y坐标
+//                                           width: imageToDraw.size.width,
+//                                           height: imageToDraw.size.height)
+//                imageToDraw.draw(in: imageDrawRect) // 在计算出的位置和尺寸绘制图片
+//                currentY += imageToDraw.size.height // 更新Y坐标到图片下方
+//            }
+//            currentY += imageBottomPadding // 在图片下方添加固定的额外间距
+//
+//        // --- 处理文本段 ---
+//        } else if let tableData = attrs[DocParser.tableDrawingDataAttributeKey] as? DocParser.TableDrawingData {
+//            guard let pdfContext = UIGraphicsGetCurrentContext() else {
+//                print("错误：绘制表格时没有PDF图形上下文。")
+//                currentY += 20 // 跳过一些空间
+//                return // 跳过此表格
+//            }
+//
+//            let tableOriginX = leftMargin + tableData.tableIndentation
+//            var currentTableContentY = currentY // 表格内容开始的Y坐标
+//
+//            // --- 简单的分页检查：如果表格起始位置太靠下，则换页 ---
+//            // 注意：这只是一个非常粗略的检查，理想情况下应在计算完所有行高后，
+//            // 或在绘制每一行之前进行更精确的分页判断。
+//            let estimatedMinRowHeightPoints: CGFloat = 20 // 假设每行至少20pt高，用于初步分页
+//            if currentTableContentY + estimatedMinRowHeightPoints > pageRect.height - bottomMargin && currentTableContentY > topMargin {
+//                startNewPage()
+//                currentTableContentY = topMargin
+//            }
+//            currentY = currentTableContentY // 更新全局的 currentY
+//
+//            // --- 列宽确定 ---
+//            // 假设 columnWidthsPoints 已经是最终的绘制宽度。
+//            // 实际应用中可能需要根据 tableTotalAvailableWidth 调整这些宽度 (例如按比例缩放)。
+//            let columnWidths = tableData.columnWidthsPoints
+//            let tableActualWidth = columnWidths.reduce(0, +)
+//
+//            // --- 存储计算出的行Y坐标和行高 ---
+//            var calculatedRowYOrigins: [CGFloat] = []
+//            var calculatedRowHeights: [CGFloat] = []
+//
+//            // --- 第一次遍历：计算每一行的实际高度 ---
+//            for (rowIndex, rowData) in tableData.rows.enumerated() {
+//                var maxCellHeightInRowPoints: CGFloat = 0.0
+//
+//                if let specifiedH = rowData.specifiedHeight, specifiedH > 0 {
+//                    // 如果行高是精确指定的
+//                    maxCellHeightInRowPoints = specifiedH
+//                } else {
+//                    // 根据单元格内容计算行高
+//                    for (cellIndexInRow, cellData) in rowData.cells.enumerated() {
+//                        // 跳过被上方单元格垂直合并覆盖的单元格 (vMerge == .continue)
+//                        if cellData.vMerge == .continue { continue }
+//
+//                        var currentCellWidthPoints: CGFloat = 0
+//                        // 计算此单元格实际占据的宽度 (考虑列合并 gridSpan)
+//                        for spanIdx in 0..<cellData.gridSpan {
+//                            if (cellData.originalColIndex + spanIdx) < columnWidths.count {
+//                                currentCellWidthPoints += columnWidths[cellData.originalColIndex + spanIdx]
+//                            }
+//                        }
+//                        // 减去单元格内部左右边距
+//                        let contentWidth = max(1, currentCellWidthPoints - cellData.margins.left - cellData.margins.right)
+//
+//                        let textBoundingRect = cellData.content.boundingRect(
+//                            with: CGSize(width: contentWidth, height: .greatestFiniteMagnitude),
+//                            options: [.usesLineFragmentOrigin, .usesFontLeading],
+//                            context: nil
+//                        )
+//                        var currentCellRequiredHeightPoints = ceil(textBoundingRect.height)
+//                        currentCellRequiredHeightPoints += (cellData.margins.top + cellData.margins.bottom) // 加上单元格内部上下边距
+//                        
+//                        // 如果此单元格是垂直合并的起始点，它的高度会影响多行，但此处计算的是它在“当前定义行”中所需的高度
+//                        // 实际的绘制高度会在绘制阶段根据vMerge的跨度来确定
+//                        maxCellHeightInRowPoints = max(maxCellHeightInRowPoints, currentCellRequiredHeightPoints)
+//                    }
+//                    maxCellHeightInRowPoints = max(maxCellHeightInRowPoints, estimatedMinRowHeightPoints) // 保证一个最小行高
+//                }
+//                calculatedRowHeights.append(max(maxCellHeightInRowPoints, estimatedMinRowHeightPoints)) // 保证一个最小行高
+//            }
+//
+//
+//            // --- 第二次遍历：绘制表格的每一行和单元格 ---
+//            var currentDrawingCellX = tableOriginX
+//
+//            for (rowIndex, rowData) in tableData.rows.enumerated() {
+//                let currentRowHeightPoints = calculatedRowHeights[rowIndex]
+//                calculatedRowYOrigins.append(currentY) // 记录当前行的Y起始位置
+//
+//                // --- 行级分页检查 ---
+//                if currentY + currentRowHeightPoints > pageRect.height - bottomMargin {
+//                    if currentY > topMargin { // 只有当当前页不是新页的顶部时才换页
+//                       startNewPage()
+//                       currentY = topMargin
+//                       calculatedRowYOrigins[rowIndex] = currentY // 更新换页后的Y起始位置
+//                    }
+//                    // 如果即使在新页面，单行还是太高，则可能会被截断。更复杂的行拆分未实现。
+//                }
+//                
+//                currentDrawingCellX = tableOriginX // 每行的起始X坐标重置
+//
+//                for (cellIndexInRow, cellData) in rowData.cells.enumerated() {
+//                    var cellDrawingWidthPoints: CGFloat = 0
+//                    // 计算此单元格的绘制宽度 (考虑列合并 gridSpan)
+//                    for spanIdx in 0..<cellData.gridSpan {
+//                        if (cellData.originalColIndex + spanIdx) < columnWidths.count {
+//                            cellDrawingWidthPoints += columnWidths[cellData.originalColIndex + spanIdx]
+//                        }
+//                    }
+//                    if cellDrawingWidthPoints <= 0 { cellDrawingWidthPoints = 50 } // 避免宽度为0
+//
+//                    var cellDrawingHeightPoints = currentRowHeightPoints
+//                    // 处理垂直合并单元格的绘制高度
+//                    if cellData.vMerge == .restart {
+//                        cellDrawingHeightPoints = 0 // 重置，然后累加其覆盖的行高
+//                        for rIdx in rowIndex..<tableData.rows.count {
+//                            let spannedRowData = tableData.rows[rIdx]
+//                            // 找到被合并的单元格
+//                            var currentLogicalColForSearch = 0
+//                            var targetCellInSpannedRow: TableCellDrawingData? = nil
+//                            for c_search in spannedRowData.cells {
+//                                if currentLogicalColForSearch == cellData.originalColIndex {
+//                                    targetCellInSpannedRow = c_search
+//                                    break
+//                                }
+//                                currentLogicalColForSearch += c_search.gridSpan
+//                            }
+//
+//                            if let actualCellInSpannedRow = targetCellInSpannedRow,
+//                               (rIdx == rowIndex || actualCellInSpannedRow.vMerge == .continue) { // 是起始行，或者后续行是continue
+//                                cellDrawingHeightPoints += calculatedRowHeights[rIdx]
+//                            } else {
+//                                break // 垂直合并结束
+//                            }
+//                        }
+//                    } else if cellData.vMerge == .continue {
+//                        // 此单元格被上方单元格覆盖，不绘制其背景和内容。
+//                        // 但它的边框（特别是上边框）可能需要作为内部水平线绘制。
+//                        // 这里简化处理：只绘制它的上边框（如果适用），然后跳到下一个单元格。
+//
+//                        let cellRectForContinue = CGRect(x: currentDrawingCellX, y: currentY, width: cellDrawingWidthPoints, height: currentRowHeightPoints)
+//                        let resolvedTopBorder = resolveCellBorder(
+//                            forEdge: .top, cellData: cellData, rowIndex: rowIndex, cellIndexInRow: cellIndexInRow,
+//                            tableData: tableData, isFirstRowOfTable: rowIndex == 0, isFirstColOfRow: cellIndexInRow == 0
+//                        )
+//                        if resolvedTopBorder.isValid {
+//                            drawBorderLine(context: pdfContext,
+//                                           start: CGPoint(x: cellRectForContinue.minX, y: cellRectForContinue.minY),
+//                                           end: CGPoint(x: cellRectForContinue.maxX, y: cellRectForContinue.minY),
+//                                           borderInfo: resolvedTopBorder)
+//                        }
+//                        currentDrawingCellX += cellDrawingWidthPoints // 移动到下一个单元格的X位置
+//                        continue // 跳过对此 .continue 单元格的其余绘制
+//                    }
+//
+//
+//                    let cellDrawingRect = CGRect(x: currentDrawingCellX,
+//                                                 y: currentY,
+//                                                 width: cellDrawingWidthPoints,
+//                                                 height: cellDrawingHeightPoints)
+//
+//                    // 1. 绘制单元格背景色
+//                    if let bgColor = cellData.backgroundColor {
+//                        pdfContext.setFillColor(bgColor.cgColor)
+//                        pdfContext.fill(cellDrawingRect)
+//                    }
+//
+//                    // 2. 绘制单元格边框 (调用辅助函数来决定画哪条以及如何画)
+//                    //    边框绘制顺序：上、左、下、右，以处理可能的覆盖关系
+//                    let bordersToDraw = cellData.borders // 使用单元格自身解析的边框
+//                    
+//                    // 上边框
+//                    let topBorder = resolveCellBorder(forEdge: .top, cellData: cellData, rowIndex: rowIndex, cellIndexInRow: cellIndexInRow, tableData: tableData, isFirstRowOfTable: rowIndex == 0, isFirstColOfRow: false)
+//                    if topBorder.isValid {
+//                        drawBorderLine(context: pdfContext, start: CGPoint(x: cellDrawingRect.minX, y: cellDrawingRect.minY), end: CGPoint(x: cellDrawingRect.maxX, y: cellDrawingRect.minY), borderInfo: topBorder)
+//                    }
+//                    // 左边框
+//                    let leftBorder = resolveCellBorder(forEdge: .left, cellData: cellData, rowIndex: rowIndex, cellIndexInRow: cellIndexInRow, tableData: tableData, isFirstRowOfTable: false, isFirstColOfRow: cellData.originalColIndex == 0)
+//                    if leftBorder.isValid {
+//                         drawBorderLine(context: pdfContext, start: CGPoint(x: cellDrawingRect.minX, y: cellDrawingRect.minY), end: CGPoint(x: cellDrawingRect.minX, y: cellDrawingRect.maxY), borderInfo: leftBorder)
+//                    }
+//                    // 下边框 (只有当它是表格的最后一行，或者是被合并单元格的底部时，才使用单元格自身的bottom；否则使用insideH)
+//                    let bottomBorder = resolveCellBorder(forEdge: .bottom, cellData: cellData, rowIndex: rowIndex, cellIndexInRow: cellIndexInRow, tableData: tableData, isFirstRowOfTable: false, isFirstColOfRow: false, isLastRowOfTable: (rowIndex == tableData.rows.count - 1) || (cellData.vMerge == .restart && (rowIndex + Int(cellDrawingHeightPoints / currentRowHeightPoints) - 1) >= tableData.rows.count - 1) )
+//                    if bottomBorder.isValid {
+//                        drawBorderLine(context: pdfContext, start: CGPoint(x: cellDrawingRect.minX, y: cellDrawingRect.maxY), end: CGPoint(x: cellDrawingRect.maxX, y: cellDrawingRect.maxY), borderInfo: bottomBorder)
+//                    }
+//                    // 右边框 (只有当它是表格的最后一列，或者是被合并单元格的右部时，才使用单元格自身的right；否则使用insideV)
+//                    let rightBorder = resolveCellBorder(forEdge: .right, cellData: cellData, rowIndex: rowIndex, cellIndexInRow: cellIndexInRow, tableData: tableData, isFirstRowOfTable: false, isFirstColOfRow: false, isLastColOfTable: (cellData.originalColIndex + cellData.gridSpan >= columnWidths.count))
+//                    if rightBorder.isValid {
+//                        drawBorderLine(context: pdfContext, start: CGPoint(x: cellDrawingRect.maxX, y: cellDrawingRect.minY), end: CGPoint(x: cellDrawingRect.maxX, y: cellDrawingRect.maxY), borderInfo: rightBorder)
+//                    }
+//
+//
+//                    // 3. 绘制单元格内容 (文本、嵌套图片等)
+//                    let contentRect = cellDrawingRect.inset(by: cellData.margins) // 应用单元格内边距
+//                    if contentRect.width > 0 && contentRect.height > 0 {
+//                        cellData.content.draw(in: contentRect)
+//                    }
+//                    
+//                    currentDrawingCellX += cellDrawingWidthPoints // 移动到下一个单元格的X位置
+//                }
+//                currentY += currentRowHeightPoints // 移动到下一行的Y位置
+//            }
+//            // 表格绘制完毕，添加一些底部间距
+//            currentY += DocxConstants.pdfLineSpacingAfterVisibleText // 或一个特定的表格后间距
+//        
+//        // --- 结束表格处理 ---
+//        }
+//        
+//        else {
+//            let textSegment = attributedString.attributedSubstring(from: range) // 获取当前属性段的富文本
+//            let segmentString = textSegment.string // 获取纯字符串，用于判断是否为空白
+//
+//            // 计算文本段渲染所需的高度
+//            let textBoundingRect = textSegment.boundingRect(
+//                with: CGSize(width: printableWidth, height: .greatestFiniteMagnitude), // 限制宽度，高度不限
+//                options: [.usesLineFragmentOrigin, .usesFontLeading], // 必须的选项以正确计算多行文本高度
+//                context: nil
+//            )
+//            let textHeight = ceil(textBoundingRect.height) // 向上取整，确保足够空间
+//
+//            // 检查当前文本段是否会超出当前页面的底部边距
+//            if currentY + textHeight > pageRect.height - bottomMargin {
+//                // 如果文本放不下，并且当前不是在页面顶部，则换页
+//                if currentY > topMargin {
+//                   startNewPage()
+//                }
+//                // 注意：如果单个textSegment（例如一个超长段落）本身就比一页还高，
+//                // NSAttributedString.draw(in:) 会自动处理绘制，但超出部分会被截断。
+//                // 真正的文本流式续排（reflowing）需要使用CoreText的CTFramesetter。
+//            }
+//            
+//            // 绘制文本段 (只有当计算出的高度大于0时)
+//            if textHeight > 0 {
+//                let drawRect = CGRect(x: leftMargin, y: currentY, width: printableWidth, height: textHeight)
+//                textSegment.draw(in: drawRect) // 在计算出的矩形区域内绘制文本
+//            }
+//            currentY += textHeight // 更新Y坐标到文本段下方
+//
+//            // 根据文本内容决定是否添加额外的行间距
+//            // （例如，我们不希望在纯粹的换行符段落后再添加额外的间距）
+//            let trimmedSegmentString = segmentString.trimmingCharacters(in: .whitespacesAndNewlines)
+//            if !trimmedSegmentString.isEmpty { // 如果修剪后的字符串不为空（即包含可见字符）
+//                currentY += lineSpacingAfterVisibleText // 则添加常量定义的额外间距
+//            }
+//            // 对于纯粹由空白（如 "\n"）组成的段落，其 textHeight 已包含了该空白行的高度，
+//            // 所以不再添加 lineSpacingAfterVisibleText (特别是当该常量为0时，无影响)。
+//        }
+//    } // 结束 enumerateAttributes 遍历
+//
+//    // 验证生成的PDF数据是否为空
+//    guard pdfData.length > 0 else {
+//        throw DocParserError.pdfGenerationFailed("处理完成后，生成的PDF数据为空。")
+//    }
+//
+//    // 如果提供了输出路径URL，则将PDF数据写入文件
+//    if let url = outputPathURL {
+//        do {
+//            try pdfData.write(to: url, options: .atomicWrite) // 原子写入更安全
+//            print("PDF 已成功保存到: \(url.path)")
+//        } catch {
+//            print("保存PDF文件失败: \(error)")
+//            throw DocParserError.pdfSavingFailed(error)
+//        }
+//    }
+//    guard pdfData.length > 0 else {
+//        print("错误：最终生成的 PDF 数据为空！") // 添加打印
+//        throw DocParserError.pdfGenerationFailed("处理完成后，生成的PDF数据为空。")
+//    }
+//    print("--- generatePDF: 最终 PDF 数据长度: \(pdfData.length) ---") // 打印最终大小
+//    return pdfData as Data // 返回PDF数据
+//}

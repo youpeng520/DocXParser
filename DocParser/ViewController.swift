@@ -27,15 +27,28 @@ class ViewController: UIViewController {
                 let resultString = try parser.parseFile(fileURL: filePath)
                 let pdfURL = FileManager.default.temporaryDirectory.appendingPathComponent("output.pdf")
                 try? FileManager.default.removeItem(at: pdfURL)
-//                try? parser.generatePDF(from: resultString,saveToURL: pdfURL)
                 
-               try? saveDocToPDF(attributedText: resultString, outputPath: pdfURL.path)
+
+                let pdfData = try? parser.generatePDFWithCustomLayout(
+                      attributedString: resultString,
+                      outputPathURL: pdfURL // 如果想直接保存文件，传入 URL
+                      // outputPathURL: nil        // 如果只想获取 Data 对象，传入 nil
+                  )
+                  
+                
+//               try? saveDocToPDF(attributedText: resultString, outputPath: pdfURL.path)
                 print("转换成功！PDF 文件路径：\(pdfURL.path)")
                 
-                print(resultString)
+//                print(resultString)
+//                let textView = self.view.viewWithTag(1) as! UITextView
+//                textView.attributedText = resultString
+                
                 let textView = self.view.viewWithTag(1) as! UITextView
-                textView.attributedText = resultString
-//                openPDF(at: pdfURL)
+                textView.removeFromSuperview()
+                
+                DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(3)) {
+                    self.openPDF(at: pdfURL)
+                }
             }
             
         }catch{
