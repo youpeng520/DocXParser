@@ -1,0 +1,29 @@
+PODS:
+  - SWXMLHash (7.0.2)
+  - Zip (2.1.2)
+
+DEPENDENCIES:
+  - SWXMLHash (from `https://github.com/drmohundro/SWXMLHash.git`, tag `8.1.0`)
+  - Zip (~> 2.1.2)
+
+SPEC REPOS:
+  trunk:
+    - Zip
+
+EXTERNAL SOURCES:
+  SWXMLHash:
+    :git: https://github.com/drmohundro/SWXMLHash.git
+    :tag: 8.1.0
+
+CHECKOUT OPTIONS:
+  SWXMLHash:
+    :git: https://github.com/drmohundro/SWXMLHash.git
+    :tag: 8.1.0
+
+SPEC CHECKSUMS:
+  SWXMLHash: dd733a457e9c4fe93b1538654057aefae4acb382
+  Zip: b3fef584b147b6e582b2256a9815c897d60ddc67
+
+PODFILE CHECKSUM: e6a1bceb1a190b6874cdfcc80c2591b52d437467
+
+COCOAPODS: 1.16.2
