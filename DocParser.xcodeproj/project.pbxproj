@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		2DFEDC39B2CF7029FF456936 /* Pods_DocParser.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4ED928CF88E68FFCBE77670E /* Pods_DocParser.framework */; };
 		709987CA2DCB5EF400649405 /* example.docx in Resources */ = {isa = PBXBuildFile; fileRef = 709987C92DCB5EF400649405 /* example.docx */; };
+		7099886D2DCCAA8200649405 /* cat.docx in Resources */ = {isa = PBXBuildFile; fileRef = 7099886C2DCCAA8200649405 /* cat.docx */; };
 		70B3DBA02DC9DCE40066D0E2 /* iOS_Stretch_1.1.11.docx in Resources */ = {isa = PBXBuildFile; fileRef = 70B3DB9F2DC9DCE40066D0E2 /* iOS_Stretch_1.1.11.docx */; };
 		C9DA529F1CC774E1004582F1 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9DA529E1CC774E1004582F1 /* AppDelegate.swift */; };
 		C9DA52A11CC774E1004582F1 /* ViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9DA52A01CC774E1004582F1 /* ViewController.swift */; };
@@ -34,6 +35,7 @@
 		11E3C2D61FE53E9A3F977628 /* Pods-DocParser.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-DocParser.debug.xcconfig"; path = "Target Support Files/Pods-DocParser/Pods-DocParser.debug.xcconfig"; sourceTree = "<group>"; };
 		4ED928CF88E68FFCBE77670E /* Pods_DocParser.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_DocParser.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		709987C92DCB5EF400649405 /* example.docx */ = {isa = PBXFileReference; lastKnownFileType = file; path = example.docx; sourceTree = "<group>"; };
+		7099886C2DCCAA8200649405 /* cat.docx */ = {isa = PBXFileReference; lastKnownFileType = file; path = cat.docx; sourceTree = "<group>"; };
 		70B3DB9F2DC9DCE40066D0E2 /* iOS_Stretch_1.1.11.docx */ = {isa = PBXFileReference; lastKnownFileType = file; path = iOS_Stretch_1.1.11.docx; sourceTree = "<group>"; };
 		73AD22F9D7CAEBC469F20921 /* Pods-DocParser.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-DocParser.release.xcconfig"; path = "Target Support Files/Pods-DocParser/Pods-DocParser.release.xcconfig"; sourceTree = "<group>"; };
 		C9DA529B1CC774E1004582F1 /* DocParser.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DocParser.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -141,6 +143,7 @@
 		C9DA52C11CC77C79004582F1 /* Document */ = {
 			isa = PBXGroup;
 			children = (
+				7099886C2DCCAA8200649405 /* cat.docx */,
 				709987C92DCB5EF400649405 /* example.docx */,
 				70B3DB9F2DC9DCE40066D0E2 /* iOS_Stretch_1.1.11.docx */,
 				C9DA52C21CC77C79004582F1 /* Fable.docx */,
@@ -233,6 +236,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				C9DA52C31CC77C79004582F1 /* Fable.docx in Resources */,
+				7099886D2DCCAA8200649405 /* cat.docx in Resources */,
 				C9DA52A91CC774E1004582F1 /* LaunchScreen.storyboard in Resources */,
 				709987CA2DCB5EF400649405 /* example.docx in Resources */,
 				C9DA52A61CC774E1004582F1 /* Assets.xcassets in Resources */,

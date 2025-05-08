@@ -2438,6 +2438,7 @@ class DocParser {
         var columnWidthsTwips: [CGFloat] = []      // 列宽 (单位: Twips)。Twip (Twentieth of a Point) 是Word中常用的长度单位，1 Point = 20 Twips。
         var defaultTableBorders = TableBorders()   // 表格的默认边框设置，从 <w:tblPr><w:tblBorders> 解析。
         var tableIndentationTwips: CGFloat = 0     // 表格整体的左侧缩进 (单位: Twips)，从 <w:tblInd> 解析。
+        var hasExplicitTableBorders = false        // 新增：标记是否找到了 <w:tblBorders>
 
         // 1. 解析表格网格定义 (<w:tblGrid>) 以获取各列的建议宽度。
         //    <w:tblGrid> 包含一系列 <w:gridCol w:w="widthInTwips"/> 元素。
@@ -2503,6 +2504,7 @@ class DocParser {
             // 解析表格的默认边框设置 (<w:tblBorders>)
             let tblBordersIndexer = tblPrIndexer["w:tblBorders"] // 获取 <w:tblBorders> 的 XMLIndexer
             if tblBordersIndexer.element != nil {
+                hasExplicitTableBorders = true // 标记找到了显式定义
                 // 调用辅助函数 parseBorderElement 分别解析上、下、左、右、内部水平、内部垂直边框
                 defaultTableBorders.top = parseBorderElement(tblBordersIndexer["w:top"])
                 defaultTableBorders.left = parseBorderElement(tblBordersIndexer["w:left"])
@@ -2510,7 +2512,10 @@ class DocParser {
                 defaultTableBorders.right = parseBorderElement(tblBordersIndexer["w:right"])
                 defaultTableBorders.insideHorizontal = parseBorderElement(tblBordersIndexer["w:insideH"])
                 defaultTableBorders.insideVertical = parseBorderElement(tblBordersIndexer["w:insideV"])
+            }else {
+                print("--- <w:tblBorders> not found ---")
             }
+            
             // 解析表格的左侧缩进 (<w:tblInd w:w="widthInTwips" w:type="dxa">)
             let tblIndIndexer = tblPrIndexer["w:tblInd"] // 获取 <w:tblInd> 的 XMLIndexer
             if tblIndIndexer.element != nil, // 检查是否存在
@@ -2520,7 +2525,26 @@ class DocParser {
             }
             // TODO: 未来可以解析 <w:tblLook> 用于条件格式化 (如首行、末行、奇偶行/列的特殊样式) - 这部分逻辑较复杂。
             // TODO: 未来可以解析 <w:tblStyle> 以应用来自 styles.xml 文件中定义的表格样式 - 这部分逻辑也较复杂。
+        }else{
+            print("---标签 w:tblPr not found ----")
         }
+        // 检查是否需要应用默认边框：
+            // 条件1: 没有找到显式的 <w:tblBorders> (hasExplicitTableBorders == false)
+            // 条件2: (可选，更精确) 表格没有应用样式，或者我们选择忽略样式总是提供默认边框
+            //        暂时简化：只要没找到显式边框定义，就应用默认值
+            if !hasExplicitTableBorders {
+                 // 设置一个基础的网格线样式
+                 let defaultGridBorder = TableBorderInfo.defaultBorder // 0.5pt 黑色实线
+                 defaultTableBorders.top = defaultGridBorder
+                 defaultTableBorders.left = defaultGridBorder
+                 defaultTableBorders.bottom = defaultGridBorder
+                 defaultTableBorders.right = defaultGridBorder
+                 defaultTableBorders.insideHorizontal = defaultGridBorder
+                 defaultTableBorders.insideVertical = defaultGridBorder
+            }
+        
+        
+        
 
         var tableRowsData: [TableRowDrawingData] = [] // 用于存储解析出的每一行的数据
         // 用于跟踪垂直合并 (vMerge) 的状态。键是逻辑列的索引，值是开始合并的那个单元格的数据。
@@ -2559,6 +2583,7 @@ class DocParser {
                 var cellVMergeStatus: VerticalMergeStatus = .none // 单元格的垂直合并状态，默认为无
                 var cellSpecificBorders = defaultTableBorders   // 单元格的边框，初始继承表格默认边框，可能被单元格自身定义覆盖
                 var cellMarginsPoints = UIEdgeInsets.zero     // 单元格的内边距 (Points)
+                var hasExplicitCellBorders = false // 标记单元格是否有自己的边框定义
 
                 // 解析单元格属性 (<w:tcPr>)
                 let tcPrIndexer = cellXML["w:tcPr"] // 获取当前单元格属性 <w:tcPr> 的 XMLIndexer
@@ -2592,6 +2617,7 @@ class DocParser {
                     // 解析单元格特有的边框设置 (<w:tcBorders>)，这会覆盖从表格继承的默认边框
                     let tcBordersIndexer = tcPrIndexer["w:tcBorders"]
                     if tcBordersIndexer.element != nil {
+                        hasExplicitCellBorders = true // 标记单元格有自己的定义
                         if tcBordersIndexer["w:top"].element != nil { cellSpecificBorders.top = parseBorderElement(tcBordersIndexer["w:top"]) }
                         if tcBordersIndexer["w:left"].element != nil { cellSpecificBorders.left = parseBorderElement(tcBordersIndexer["w:left"]) }
                         if tcBordersIndexer["w:bottom"].element != nil { cellSpecificBorders.bottom = parseBorderElement(tcBordersIndexer["w:bottom"]) }
@@ -2644,7 +2670,7 @@ class DocParser {
                 // 创建当前单元格的数据对象
                 let currentCellData = TableCellDrawingData(
                     content: cellContentAccumulator,        // 单元格内容
-                    borders: cellSpecificBorders,           // 单元格边框
+                    borders: cellSpecificBorders,           // 单元格边框  使用可能包含默认值的 borders
                     backgroundColor: cellBackgroundColor,   // 单元格背景色
                     gridSpan: cellGridSpan,                 // 列合并数
                     vMerge: cellVMergeStatus,               // 垂直合并状态
