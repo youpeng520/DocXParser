@@ -176,18 +176,10 @@ class DocParser {
 
                // 根据列表级别计算缩进字符串。示例：每级缩进4个空格。
                let indent = String(repeating: "    ", count: level)
-               
-               // --- 修改点：移除硬编码的 "•" 占位符 ---
-               // 原始逻辑会在这里定义一个 numberPlaceholder = "•" 并将其与 indent 组合。
-               // 例如:
-               //   let numberPlaceholder = "•"
-               //   listItemPrefix = indent + numberPlaceholder + " "
-               //
-               // 新逻辑：仅使用计算出的缩进作为前缀。
-               // "•" 字符及其后的空格已被移除。
+        
                // 如果未来实现了 numbering.xml 的解析，这里的逻辑需要更新，
                // 以便使用从 numbering.xml 中获取的实际列表标记来替换或增强此处的 indent。
-               listItemPrefix = indent // 仅保留缩进，移除了 "•" 和其后的空格
+               listItemPrefix = indent // 仅保留缩进
                
                // 如果 listItemPrefix (即缩进字符串) 不为空，则将其添加到段落富文本中。
                if !listItemPrefix.isEmpty {
@@ -263,135 +255,72 @@ class DocParser {
      * - Returns: 一个元组，包含最终生效的段落级属性 (paragraphAttributes) 和此段落内文本运行的默认属性 (runAttributes)。
      */
     private func parseParagraphProperties(fromPPrNode pPrNode: XMLNode) throws -> (paragraphAttributes: Attributes, runAttributes: Attributes) {
-        var effectiveParagraphAttributes = Attributes() // 最终生效的段落属性
-        var effectiveRunAttributes = Attributes()       // 最终生效的、此段落内容的默认运行属性
+           var effectiveParagraphAttributes = Attributes()
+           var effectiveRunAttributes = Attributes()
 
-        // 1. 初始：从 StyleParser 获取文档的默认段落样式属性 (包括其默认运行属性)
-        let (docDefaultParaAttrs, docDefaultRunAttrs) = styleParser.getDefaultParagraphStyleAttributes()
-        effectiveParagraphAttributes.merge(docDefaultParaAttrs) { _, new in new } // 合并段落属性
-        effectiveRunAttributes.merge(docDefaultRunAttrs) { _, new in new }       // 合并运行属性
-        
-        // 2. 应用段落命名样式 (如果 <w:pStyle w:val="StyleID"/> 存在)
-        // 命名样式会覆盖文档默认样式。
-        if let pStyleId = pPrNode["w:pStyle"].attributeValue(by: "w:val") {
-            let (namedParaStyleAttrs, namedRunStyleAttrs) = styleParser.getResolvedAttributes(forStyleId: pStyleId)
-            effectiveParagraphAttributes.merge(namedParaStyleAttrs) { _, new in new } // 段落属性，命名样式优先
-            effectiveRunAttributes.merge(namedRunStyleAttrs) { _, new in new }       // 运行属性，命名样式优先
-        }
+           // 1. 初始：从 StyleParser 获取文档的默认段落样式属性 (包括其默认运行属性)
+           let (docDefaultParaAttrs, docDefaultRunAttrs) = styleParser.getDefaultParagraphStyleAttributes()
+           effectiveParagraphAttributes.merge(docDefaultParaAttrs) { _, new in new }
+           effectiveRunAttributes.merge(docDefaultRunAttrs) { _, new in new }
+           
+           // 2. 应用段落命名样式
+           if let pStyleId = pPrNode["w:pStyle"].attributeValue(by: "w:val") {
+               let (namedParaStyleAttrs, namedRunStyleAttrs) = styleParser.getResolvedAttributes(forStyleId: pStyleId)
+               effectiveParagraphAttributes.merge(namedParaStyleAttrs) { _, new in new }
+               effectiveRunAttributes.merge(namedRunStyleAttrs) { _, new in new }
+           }
 
-        // 3. 基于当前积累的属性创建或修改 NSParagraphStyle 对象
-        //    直接在 <w:pPr> 中定义的属性 (如 <w:jc>, <w:ind>) 会覆盖从样式继承来的相应部分。
-        let paragraphStyleToModify: NSMutableParagraphStyle
-        if let existingStyle = effectiveParagraphAttributes[.paragraphStyle] as? NSParagraphStyle {
-            paragraphStyleToModify = existingStyle.mutableCopy() as! NSMutableParagraphStyle
-        } else { // 如果之前没有解析到NSParagraphStyle (例如样式中未定义)，则新建一个
-            paragraphStyleToModify = NSMutableParagraphStyle()
-            // 设置一些NSParagraphStyle的绝对基础默认值，以防万一XML和样式都没有定义
-            paragraphStyleToModify.alignment = .natural
-            paragraphStyleToModify.lineHeightMultiple = 1.0
-        }
+           // 3. 基于当前积累的属性创建或修改 NSParagraphStyle 对象
+           let paragraphStyleToModify: NSMutableParagraphStyle
+           if let existingStyle = effectiveParagraphAttributes[.paragraphStyle] as? NSParagraphStyle {
+               paragraphStyleToModify = existingStyle.mutableCopy() as! NSMutableParagraphStyle
+           } else {
+               paragraphStyleToModify = NSMutableParagraphStyle()
+               paragraphStyleToModify.alignment = .natural
+               paragraphStyleToModify.lineHeightMultiple = 1.0
+           }
 
-        // 4. 解析 <w:pPr> 中直接定义的属性，并修改 paragraphStyleToModify 对象
-        // 对齐
-        if let alignVal = pPrNode["w:jc"].attributeValue(by: "w:val") {
-            switch alignVal.lowercased() {
-            case "left", "start": paragraphStyleToModify.alignment = .left
-            case "right", "end": paragraphStyleToModify.alignment = .right
-            case "center": paragraphStyleToModify.alignment = .center
-            case "both", "distribute", "justify": paragraphStyleToModify.alignment = .justified
-            default: break // 未指定或未知值，则保持从样式继承的值
-            }
-        }
+           // 4. 解析 <w:pPr> 中直接定义的属性，并修改 paragraphStyleToModify 对象
+           // ... (对齐、缩进、间距等 NSParagraphStyle 相关属性的解析代码) ...
+           // 例如:
+           // if let alignVal = pPrNode["w:jc"].attributeValue(by: "w:val") { ... }
+           // if let indNode = pPrNode["w:ind"].element { ... }
+           // if let spacingNode = pPrNode["w:spacing"].element { ... }
 
-        // 缩进
-        let twipsPerPoint: CGFloat = 20.0
-        let indNode = pPrNode["w:ind"]
-        if indNode.element != nil { // 如果存在 <w:ind> 标签
-            // 基础左缩进 (headIndent)
-            // 如果 <w:ind> 中直接定义了 left/start，则覆盖从样式继承的 headIndent
-            // 否则，保留样式中的 headIndent，后续 firstLine/hanging 会基于它调整
-            var baseLeftIndent = paragraphStyleToModify.headIndent
-            if let leftValStr = indNode.attributeValue(by: "w:left") ?? indNode.attributeValue(by: "w:start"), let val = Double(leftValStr) {
-                baseLeftIndent = CGFloat(val) / twipsPerPoint
-                paragraphStyleToModify.headIndent = baseLeftIndent
-            }
+           // 将修改后的 NSParagraphStyle 对象存回属性字典
+           effectiveParagraphAttributes[.paragraphStyle] = paragraphStyleToModify.copy() // << 确保这行在正确的位置
 
-            // 首行缩进 (firstLineHeadIndent)
-            // OOXML 的 w:firstLine 和 w:hanging 是绝对值或相对于 0 的值。
-            // NSParagraphStyle 的 firstLineHeadIndent 是相对于 headIndent 的偏移。
-            // 因此，如果 firstLine/hanging 被直接定义，我们需要计算相对于 *新* headIndent 的偏移。
-            // 但更常见的是，w:firstLine/hanging 定义了首行的绝对缩进，而 headIndent 定义了后续行的绝对缩进。
-            // 这里我们采用后一种理解：直接设置 firstLineHeadIndent 和 headIndent。
+           // 5. 解析 <w:pPr><w:rPr> (段落属性中定义的默认运行属性)，并合并到 effectiveRunAttributes
+           if pPrNode["w:rPr"].element != nil {
+               let directPPrRunAttrs = parseRunPropertiesFromNode(runPropertyXML: pPrNode["w:rPr"], baseAttributes: effectiveRunAttributes)
+               effectiveRunAttributes.merge(directPPrRunAttrs) { _, new in new }
+           }
+           
+           // ---- 清理 effectiveParagraphAttributes 中的运行级属性 ----
+           // ---- 这是解决问题的关键步骤 ----
+           let runAttributeKeys: [NSAttributedString.Key] = [
+               .font, .foregroundColor, .backgroundColor, .kern, .ligature,
+               .strikethroughStyle, .underlineStyle, .strokeColor, .strokeWidth,
+               .shadow, .textEffect, .baselineOffset, .underlineColor,
+               .strikethroughColor, .obliqueness, .expansion
+               // 添加其他你认为是运行级的键
+           ]
 
-            if let firstLineValStr = indNode.attributeValue(by: "w:firstLine"), let val = Double(firstLineValStr) {
-                 // w:firstLine 直接指定首行缩进的绝对值
-                 paragraphStyleToModify.firstLineHeadIndent = CGFloat(val) / twipsPerPoint
-                 // headIndent 已经设置（可能来自样式或上方直接的 w:left/start）
-            } else if let hangingValStr = indNode.attributeValue(by: "w:hanging"), let val = Double(hangingValStr)  {
-                 // w:hanging 指定悬挂量。首行在 baseLeftIndent，后续行在 baseLeftIndent + hangingAmount
-                 let hangingAmount = CGFloat(val) / twipsPerPoint
-                 paragraphStyleToModify.firstLineHeadIndent = baseLeftIndent // 首行在基础左缩进处
-                 paragraphStyleToModify.headIndent = baseLeftIndent + hangingAmount  // 后续行更靠右
-             } else if pPrNode["w:ind"].attributeValue(by: "w:left") != nil || pPrNode["w:ind"].attributeValue(by: "w:start") != nil || pPrNode["w:ind"].attributeValue(by: "w:firstLine") != nil || pPrNode["w:ind"].attributeValue(by: "w:hanging") != nil {
-                 // 如果 <w:ind> 存在，但没有显式的 w:firstLine 或 w:hanging，
-                 // 那么首行缩进就等于 headIndent (非悬挂，非特殊首行)
-                 paragraphStyleToModify.firstLineHeadIndent = paragraphStyleToModify.headIndent
-             }
-             // 如果 <w:ind> 完全不存在，则 firstLineHeadIndent 和 headIndent 保持从样式继承。
-        }
-        
-        // 间距
-        if let spacingNode = pPrNode["w:spacing"].element {
-            // 段前间距
-            if let beforeStr = spacingNode.attribute(by: "w:before")?.text, let val = Double(beforeStr) {
-                paragraphStyleToModify.paragraphSpacingBefore = CGFloat(val) / twipsPerPoint
-            }
-            // 段后间距
-            if let afterStr = spacingNode.attribute(by: "w:after")?.text, let val = Double(afterStr) {
-                paragraphStyleToModify.paragraphSpacing = CGFloat(val) / twipsPerPoint // NSParagraphStyle 的 paragraphSpacing 是段后
-            }
-            
-            // 行距
-            // var ruleApplied = false // 标记是否应用了直接的行距规则
-            if let lineValStr = spacingNode.attribute(by: "w:line")?.text, let lineVal = Double(lineValStr) {
-                 let lineRule = spacingNode.attribute(by: "w:lineRule")?.text.lowercased()
-                 switch lineRule {
-                 case "auto": // lineVal 是 240 的倍数，表示行高倍数
-                      paragraphStyleToModify.lineHeightMultiple = CGFloat(lineVal) / 240.0
-                      paragraphStyleToModify.minimumLineHeight = 0; paragraphStyleToModify.maximumLineHeight = 0 // 清除固定行高
-                      // ruleApplied = true
-                 case "exact": // lineVal 是 Twips，固定行高
-                      let exactHeight = CGFloat(lineVal) / twipsPerPoint
-                      paragraphStyleToModify.minimumLineHeight = exactHeight; paragraphStyleToModify.maximumLineHeight = exactHeight
-                      paragraphStyleToModify.lineHeightMultiple = 0 // 使用固定行高时，倍数应为0
-                      // ruleApplied = true
-                 case "atleast": // lineVal 是 Twips，最小行高
-                      paragraphStyleToModify.minimumLineHeight = CGFloat(lineVal) / twipsPerPoint
-                      paragraphStyleToModify.maximumLineHeight = 0; paragraphStyleToModify.lineHeightMultiple = 0 // 倍数为0
-                      // ruleApplied = true
-                 default: // 包括 lineRule 未指定 (视为 'multiple') 或 "multiple"
-                      if lineRule == nil || lineRule == "multiple" { // 明确处理这两种常见情况
-                          paragraphStyleToModify.lineHeightMultiple = CGFloat(lineVal) / 240.0
-                          paragraphStyleToModify.minimumLineHeight = 0; paragraphStyleToModify.maximumLineHeight = 0
-                          // ruleApplied = true
-                      }
-                 }
-             }
-        }
-        // 将修改后的 NSParagraphStyle 对象存回属性字典
-        effectiveParagraphAttributes[.paragraphStyle] = paragraphStyleToModify.copy()
+           // print("DEBUG: parseParagraphProperties - BEFORE cleanup, effectiveParagraphAttributes contains font: \(effectiveParagraphAttributes[.font] != nil), color: \(effectiveParagraphAttributes[.foregroundColor] != nil)")
 
-        // 5. 解析 <w:pPr><w:rPr> (段落属性中定义的默认运行属性)，并合并到 effectiveRunAttributes
-        // 这些会覆盖从段落样式或文档默认样式继承来的运行属性。
-        if pPrNode["w:rPr"].element != nil { // 检查 <w:pPr> 下是否有 <w:rPr>
-            // `parseRunPropertiesFromNode` 会基于 `effectiveRunAttributes` (已包含样式信息)
-            // 并应用 `pPrNode["w:rPr"]` 中的直接定义。
-            let directPPrRunAttrs = parseRunPropertiesFromNode(runPropertyXML: pPrNode["w:rPr"], baseAttributes: effectiveRunAttributes)
-            effectiveRunAttributes.merge(directPPrRunAttrs) { _, new in new } // directPPrRunAttrs 优先
-        }
-        
-        return (effectiveParagraphAttributes, effectiveRunAttributes)
-    }
+           for key in runAttributeKeys {
+               effectiveParagraphAttributes.removeValue(forKey: key)
+           }
+
+           // print("DEBUG: parseParagraphProperties - AFTER cleanup, effectiveParagraphAttributes contains font: \(effectiveParagraphAttributes[.font] != nil), color: \(effectiveParagraphAttributes[.foregroundColor] != nil)")
+           // ---- 清理结束 ----
+
+           // 在这里再次打印 effectiveParagraphAttributes，确认它不包含 .font 和 .foregroundColor
+           // print("DEBUG: parseParagraphProperties - Returning cleaned effectiveParagraphAttributes: \(effectiveParagraphAttributes)")
+
+           return (effectiveParagraphAttributes, effectiveRunAttributes)
+       }
+
 
     // MARK: - Run Processing (Handles styles and direct formatting) (文本运行处理 - 处理样式和直接格式化)
     /**
@@ -438,165 +367,253 @@ class DocParser {
     }
     
     // MARK: - Run Property Parsing (for direct formatting, builds on base) (运行属性解析 - 用于直接格式化，基于基础属性构建)
-    /**
-     * 从 <w:rPr> XML节点解析直接定义的运行属性，并与传入的基础属性合并。
-     * - Parameter runPropertyXML: 指向 <w:rPr> 节点的 XMLIndexer。
-     * - Parameter baseAttributes: 作为基础的运行属性字典 (可能来自段落默认或字符样式)。
-     * - Returns: 包含最终生效的运行属性的字典。
-     */
-    private func parseRunPropertiesFromNode(runPropertyXML: XMLNode, baseAttributes: Attributes) -> Attributes {
-        var attributes = baseAttributes // 从基础属性开始
+      /**
+       * 从 <w:rPr> XML节点解析直接定义的运行属性，并与传入的基础属性合并。
+       * - Parameter runPropertyXML: 指向 <w:rPr> 节点的 XMLIndexer。 如果文本运行没有 <w:rPr>，它将是一个无效的 XMLIndexer (其 .element 会是 nil)。
+       * - Parameter baseAttributes: 作为基础的运行属性字典 (可能来自段落默认或字符样式)。
+       * - Returns: 包含最终生效的运行属性的字典。
+       */
+      private func parseRunPropertiesFromNode(runPropertyXML: XMLNode, baseAttributes: Attributes) -> Attributes {
+          var attributes = baseAttributes // 从基础属性开始，后续解析的直接格式会覆盖这些基础属性
 
-        // 从基础属性中提取初始值，以便直接格式化可以覆盖它们
-        var currentFont = baseAttributes[.font] as? UIFont
-        var fontSize = currentFont?.pointSize ?? DocxConstants.defaultFontSize
-        var fontNameFromDocx: String? = currentFont?.fontName // 默认使用基础字体名
-        
-        var isBold = currentFont?.fontDescriptor.symbolicTraits.contains(.traitBold) ?? false
-        var isItalic = currentFont?.fontDescriptor.symbolicTraits.contains(.traitItalic) ?? false
-        var isUnderline = (baseAttributes[.underlineStyle] as? NSNumber)?.intValue == NSUnderlineStyle.single.rawValue
-        var isStrikethrough = (baseAttributes[.strikethroughStyle] as? NSNumber)?.intValue == NSUnderlineStyle.single.rawValue
-        var foregroundColor = baseAttributes[.foregroundColor] as? UIColor ?? UIColor.black // 默认黑色
-        var highlightColor = baseAttributes[.backgroundColor] as? UIColor // 可能为nil
-        var verticalAlign: Int = 0 // 0: 基线, 1: 上标, 2: 下标
-        // 从基线偏移量粗略推断垂直对齐状态
-        if let baselineOffset = baseAttributes[.baselineOffset] as? CGFloat {
-            if baselineOffset > 0.1 * fontSize { verticalAlign = 1 }
-            else if baselineOffset < -0.1 * fontSize { verticalAlign = 2 }
-        }
+          // 从基础属性中提取初始值或设置全局默认值，以便后续的直接格式化可以覆盖它们
+          var currentFont = baseAttributes[.font] as? UIFont // 尝试获取基础字体
+          var fontSize = currentFont?.pointSize ?? DocxConstants.defaultFontSize // 字体大小，若无基础则用默认
+          var fontNameFromDocx: String? = currentFont?.fontName // 字体名称，若无基础则为nil (后续会用默认字体名)
+          
+          // 初始的粗体/斜体状态从基础字体推断 (如果基础字体存在且带有这些特性)
+          var isBold = currentFont?.fontDescriptor.symbolicTraits.contains(.traitBold) ?? false
+          var isItalic = currentFont?.fontDescriptor.symbolicTraits.contains(.traitItalic) ?? false
+          
+          // 初始的下划线/删除线状态从基础属性字典中推断
+          var isUnderline = (baseAttributes[.underlineStyle] as? NSNumber)?.intValue == NSUnderlineStyle.single.rawValue
+          var isStrikethrough = (baseAttributes[.strikethroughStyle] as? NSNumber)?.intValue == NSUnderlineStyle.single.rawValue
+          
+          // 初始文本颜色从基础属性推断，如果基础属性中没有颜色，则默认为黑色
+          var foregroundColor = baseAttributes[.foregroundColor] as? UIColor ?? UIColor.black
+          // 背景高亮色，可能为nil
+          var highlightColor = baseAttributes[.backgroundColor] as? UIColor
 
-        // --- 解析来自 runPropertyXML (<w:rPr>) 的直接覆盖属性 ---
-        // 字体大小
-        if let szStr = runPropertyXML["w:sz"].attributeValue(by: "w:val") ?? runPropertyXML["w:szCs"].attributeValue(by: "w:val"),
-           let sizeValHalfPoints = Double(szStr) {
-            fontSize = CGFloat(sizeValHalfPoints) / 2.0
-        }
+          // 垂直对齐状态 (0: 基线, 1: 上标, 2: 下标)
+          var verticalAlign: Int = 0
+          // 尝试从基础属性的基线偏移推断初始垂直对齐状态
+          if let baselineOffset = baseAttributes[.baselineOffset] as? CGFloat {
+              // 这个推断比较粗略，基线偏移也可能用于其他精细调整
+              if baselineOffset > 0.1 * fontSize { verticalAlign = 1 } // 显著正偏移视为上标
+              else if baselineOffset < -0.1 * fontSize { verticalAlign = 2 } // 显著负偏移视为下标
+          }
 
-        // 字体名称
-        let rFontsNode = runPropertyXML["w:rFonts"]
-        if rFontsNode.element != nil {
-            fontNameFromDocx = rFontsNode.attributeValue(by: "w:ascii") ??
-                               rFontsNode.attributeValue(by: "w:hAnsi") ??
-                               rFontsNode.attributeValue(by: "w:eastAsia") ??
-                               rFontsNode.attributeValue(by: "w:cs") ?? fontNameFromDocx
-        }
+          // --- 仅当 runPropertyXML (<w:rPr>) 实际存在时，才解析其中的直接覆盖属性 ---
+          if runPropertyXML.element != nil { // 检查 <w:rPr> 节点是否真的存在内容
+              // 字体大小 (<w:sz> 定义西文字体大小, <w:szCs> 定义复杂文种/亚洲字体大小)
+              // XML中 w:val 的单位是半磅 (half-points)
+              if let szStr = runPropertyXML["w:sz"].attributeValue(by: "w:val") ?? runPropertyXML["w:szCs"].attributeValue(by: "w:val"),
+                 let sizeValHalfPoints = Double(szStr) {
+                  fontSize = CGFloat(sizeValHalfPoints) / 2.0 // 转换为磅 (points)
+              }
 
-        // 粗体
-        if runPropertyXML["w:b"].element != nil {
-            isBold = runPropertyXML["w:b"].attributeValue(by: "w:val") != "0" && runPropertyXML["w:b"].attributeValue(by: "w:val") != "false"
-        } else if runPropertyXML["w:bCs"].element != nil {
-            isBold = runPropertyXML["w:bCs"].attributeValue(by: "w:val") != "0" && runPropertyXML["w:bCs"].attributeValue(by: "w:val") != "false"
-        }
-        // 斜体
-        if runPropertyXML["w:i"].element != nil {
-            isItalic = runPropertyXML["w:i"].attributeValue(by: "w:val") != "0" && runPropertyXML["w:i"].attributeValue(by: "w:val") != "false"
-        } else if runPropertyXML["w:iCs"].element != nil {
-            isItalic = runPropertyXML["w:iCs"].attributeValue(by: "w:val") != "0" && runPropertyXML["w:iCs"].attributeValue(by: "w:val") != "false"
-        }
-        
-        // 下划线
-        if let uNode = runPropertyXML["w:u"].element {
-            let uVal = uNode.attribute(by: "w:val")?.text.lowercased()
-            isUnderline = !(uVal == "none" || uVal == "0")
-        }
+              // 字体名称 (<w:rFonts>)
+              let rFontsNode = runPropertyXML["w:rFonts"]
+              if rFontsNode.element != nil {
+                  // 按照 Word 的优先级尝试获取字体名称: ascii (标准西文), hAnsi (高ANSI/扩展西文), eastAsia (东亚文字), cs (复杂文种)
+                  // 如果 <w:rFonts> 中指定了任何一个，则使用它来覆盖从 baseAttributes 继承的 fontNameFromDocx
+                  fontNameFromDocx = rFontsNode.attributeValue(by: "w:ascii") ??
+                                     rFontsNode.attributeValue(by: "w:hAnsi") ??
+                                     rFontsNode.attributeValue(by: "w:eastAsia") ??
+                                     rFontsNode.attributeValue(by: "w:cs") ?? fontNameFromDocx // 如果都没指定，保持原来的值
+              }
 
-        // 删除线
-        if runPropertyXML["w:strike"].element != nil {
-            isStrikethrough = runPropertyXML["w:strike"].attributeValue(by: "w:val") != "0" && runPropertyXML["w:strike"].attributeValue(by: "w:val") != "false"
-        } else if runPropertyXML["w:dstrike"].element != nil {
-             isStrikethrough = runPropertyXML["w:dstrike"].attributeValue(by: "w:val") != "0" && runPropertyXML["w:dstrike"].attributeValue(by: "w:val") != "false"
-        }
+              // 粗体 (<w:b> 或 <w:bCs> 为复杂文种字符设置粗体)
+              // DOCX中布尔型属性的规则:
+              // 1. 元素存在，无 w:val 属性 (如 <w:b/>): 效果为 true。
+              // 2. 元素存在，w:val="true" 或 w:val="1": 效果为 true。
+              // 3. 元素存在，w:val="false" 或 w:val="0": 效果为 false。
+              // 4. 元素不存在: 效果继承自样式或默认为 false。
+              // 下面的逻辑实现了这个规则：如果元素存在，且 w:val 不是 "0" 或 "false" (包括 w:val 不存在的情况)，则为 true。
+              if runPropertyXML["w:b"].element != nil { // 优先检查 <w:b>
+                  let val = runPropertyXML["w:b"].attributeValue(by: "w:val")
+                  isBold = (val == nil || (val != "0" && val != "false")) // 更新 isBold 状态
+              } else if runPropertyXML["w:bCs"].element != nil { // 其次检查 <w:bCs>
+                  let val = runPropertyXML["w:bCs"].attributeValue(by: "w:val")
+                  isBold = (val == nil || (val != "0" && val != "false")) // 更新 isBold 状态
+              }
+              // 如果 <w:rPr> 中没有 <w:b> 或 <w:bCs> 标签，isBold 将保持其从 baseAttributes 继承的初始值。
 
-        // 文本颜色
-        if let colorValHex = runPropertyXML["w:color"].attributeValue(by: "w:val") {
-            if colorValHex.lowercased() == "auto" {
-                 foregroundColor = styleParser.getDefaultCharacterStyleAttributes()[.foregroundColor] as? UIColor ?? UIColor.black
-            } else if let color = UIColor(hex: colorValHex) {
-                foregroundColor = color
-            }
-        }
-        
-        // 高亮颜色
-         if let highlightVal = runPropertyXML["w:highlight"].attributeValue(by: "w:val") {
-             if highlightVal.lowercased() == "none" {
-                 highlightColor = nil
-             } else {
-                 highlightColor = mapHighlightColor(highlightVal) ?? highlightColor
-             }
-         }
+              // 斜体 (<w:i> 或 <w:iCs> 为复杂文种字符设置斜体)
+              // 逻辑同粗体
+              if runPropertyXML["w:i"].element != nil {
+                  let val = runPropertyXML["w:i"].attributeValue(by: "w:val")
+                  isItalic = (val == nil || (val != "0" && val != "false"))
+              } else if runPropertyXML["w:iCs"].element != nil {
+                  let val = runPropertyXML["w:iCs"].attributeValue(by: "w:val")
+                  isItalic = (val == nil || (val != "0" && val != "false"))
+              }
+              
+              // 下划线 (<w:u>)
+              if let uNode = runPropertyXML["w:u"].element { // 检查 <w:u> 元素是否存在
+                  let uVal = uNode.attribute(by: "w:val")?.text.lowercased()
+                  // 如果 <w:u> 存在:
+                  // - 若 w:val="none" (或 "0", 虽然不规范但兼容一下)，则无下划线。
+                  // - 若 w:val 不存在 (即 <w:u/>)，或 w:val 是其他值 (如 "single", "double" 等)，则有下划线。
+                  isUnderline = !(uVal == "none" || uVal == "0")
+                  // TODO: 当前仅支持简单下划线 (NSUnderlineStyle.single)。
+                  //       未来可以解析 uVal 的具体值 (e.g., "double", "dotted") 来实现更丰富的下划线样式。
+              }
 
-        // 垂直对齐 (上标/下标)
-        if let vertAlignVal = runPropertyXML["w:vertAlign"].attributeValue(by: "w:val") {
-            switch vertAlignVal.lowercased() {
-            case "superscript": verticalAlign = 1
-            case "subscript": verticalAlign = 2
-            default: verticalAlign = 0
-            }
-        }
+              // 删除线 (<w:strike> 单删除线, <w:dstrike> 双删除线)
+              // 逻辑同粗体/斜体
+              if runPropertyXML["w:strike"].element != nil { // 检查单删除线
+                  let val = runPropertyXML["w:strike"].attributeValue(by: "w:val")
+                  isStrikethrough = (val == nil || (val != "0" && val != "false"))
+              } else if runPropertyXML["w:dstrike"].element != nil { // 检查双删除线 (我们也视作删除线)
+                   let val = runPropertyXML["w:dstrike"].attributeValue(by: "w:val")
+                   isStrikethrough = (val == nil || (val != "0" && val != "false"))
+              }
 
-        // -- 构建最终字体并更新属性字典 --
-        var traits: UIFontDescriptor.SymbolicTraits = []
-        if isBold { traits.insert(.traitBold) }
-        if isItalic { traits.insert(.traitItalic) }
+              // 文本颜色 (<w:color>)
+              // w:val 可以是 "auto", RRGGBB 十六进制值, 或涉及主题颜色 (w:themeColor)。
+              if let colorNode = runPropertyXML["w:color"].element, // 确保 <w:color> 节点存在
+                 let colorVal = colorNode.attribute(by: "w:val")?.text { // 获取 w:val 的值
+                  
+                  if colorVal.lowercased() == "auto" {
+                       // "auto" 颜色通常表示继承自更高层级样式或文档的默认文本颜色 (一般是黑色)。
+                       // 这里尝试从 StyleParser 获取文档默认字符样式的颜色，若无，则默认为黑色。
+                       foregroundColor = styleParser.getDefaultCharacterStyleAttributes()[.foregroundColor] as? UIColor ?? UIColor.black
+                  } else if colorNode.attribute(by: "w:themeColor")?.text != nil {
+                      // TODO: 主题颜色处理。这需要解析 themeN.xml 文件和颜色变换 (如 w:themeTint, w:themeShade)。
+                      // 暂时的处理：如果指定了主题颜色但当前不支持解析，foregroundColor 将保持从 baseAttributes 继承的值。
+                      // print("DocParser: 主题颜色 (\(colorVal), theme: \(themeColorName!)) 暂未完全支持，颜色可能不准确。")
+                  } else if let color = UIColor(hex: colorVal) { // 尝试将 w:val 解析为十六进制颜色
+                      foregroundColor = color // 如果解析成功，则更新文本颜色
+                  }
+                  // 如果 w:val 既不是 "auto"，也不是有效十六进制，且不是（当前支持的）主题颜色，
+                  // foregroundColor 将保持其从 baseAttributes 继承的初始值。
+              }
+              
+              // 高亮颜色 (<w:highlight>)
+              // w:val 是预定义的颜色名称字符串，如 "yellow", "green" 等。
+               if let highlightVal = runPropertyXML["w:highlight"].attributeValue(by: "w:val") {
+                   if highlightVal.lowercased() == "none" { // "none" 表示移除高亮
+                       highlightColor = nil
+                   } else {
+                       // mapHighlightColor 方法将 Word 的高亮颜色名映射到 UIColor
+                       highlightColor = mapHighlightColor(highlightVal) ?? highlightColor // 如果映射失败，保持原高亮色
+                   }
+               }
 
-        var finalFont: UIFont?
-        let effectiveFontName = fontNameFromDocx ?? DocxConstants.defaultFontName
+              // 垂直对齐 (上标/下标) (<w:vertAlign>)
+              // w:val 可以是 "superscript", "subscript", 或 "baseline" (默认)。
+              if let vertAlignVal = runPropertyXML["w:vertAlign"].attributeValue(by: "w:val") {
+                  switch vertAlignVal.lowercased() {
+                  case "superscript": verticalAlign = 1 // 标记为上标
+                  case "subscript": verticalAlign = 2   // 标记为下标
+                  default: verticalAlign = 0           // "baseline" 或其他未知值，视为基线对齐
+                  }
+              }
+          } // 结束对 <w:rPr> 内部属性的解析
 
-        // 尝试创建字体
-        if let baseFontAttempt = UIFont(name: effectiveFontName, size: fontSize) {
-            if !traits.isEmpty, let fontDescriptorWithTraits = baseFontAttempt.fontDescriptor.withSymbolicTraits(traits) {
-                finalFont = UIFont(descriptor: fontDescriptorWithTraits, size: fontSize)
-            } else {
-                finalFont = baseFontAttempt
-            }
-        } else {
-            let systemFont = UIFont.systemFont(ofSize: fontSize)
-            if !traits.isEmpty, let fontDescriptorWithTraits = systemFont.fontDescriptor.withSymbolicTraits(traits) {
-                finalFont = UIFont(descriptor: fontDescriptorWithTraits, size: fontSize)
-            } else {
-                finalFont = systemFont
-            }
-        }
-        
-        // 应用最终计算出的属性
-        if let font = finalFont { attributes[.font] = font }
-        attributes[.foregroundColor] = foregroundColor
-        
-        if isUnderline { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
-        else { attributes.removeValue(forKey: .underlineStyle) }
-        
-        if isStrikethrough { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
-        else { attributes.removeValue(forKey: .strikethroughStyle) }
-        
-        if let bgColor = highlightColor { attributes[.backgroundColor] = bgColor }
-        else { attributes.removeValue(forKey: .backgroundColor) }
-        
-        // 处理上标/下标的基线偏移和字体大小调整
-        if verticalAlign != 0 {
-            let actualFontSizeForOffset = (finalFont ?? UIFont.systemFont(ofSize: fontSize)).pointSize
-            attributes[.baselineOffset] = (verticalAlign == 1) ? (actualFontSizeForOffset * 0.35) : -(actualFontSizeForOffset * 0.20)
-            
-            if let currentBaseFont = finalFont {
-                let targetSize = actualFontSizeForOffset * 0.75
-                if let smallerFontDescriptor = currentBaseFont.fontDescriptor.withSymbolicTraits(traits) {
-                     attributes[.font] = UIFont(descriptor: smallerFontDescriptor, size: targetSize)
-                } else {
-                    attributes[.font] = UIFont(name: currentBaseFont.fontName, size: targetSize) ?? UIFont.systemFont(ofSize: targetSize)
-                }
-            }
-        } else {
-            attributes.removeValue(forKey: .baselineOffset)
-            
-            if let currentF = attributes[.font] as? UIFont, currentF.pointSize != fontSize {
-                if let restoredFontDescriptor = currentF.fontDescriptor.withSymbolicTraits(traits) {
-                     attributes[.font] = UIFont(descriptor: restoredFontDescriptor, size: fontSize)
-                } else {
-                    attributes[.font] = UIFont(name: currentF.fontName, size: fontSize) ?? UIFont.systemFont(ofSize: fontSize)
-                }
-            }
-        }
-        return attributes
-    }
+          // -- 根据解析到的状态 (isBold, isItalic, fontNameFromDocx, fontSize 等) 构建最终字体 --
+          var traits: UIFontDescriptor.SymbolicTraits = [] // 用于存储字体特性（粗体、斜体）
+          if isBold { traits.insert(.traitBold) }
+          if isItalic { traits.insert(.traitItalic) }
+
+          var finalFont: UIFont?
+          // 优先使用从 DOCX 解析的字体名，如果解析不到或为空，则使用全局默认字体名
+          let effectiveFontName = fontNameFromDocx ?? DocxConstants.defaultFontName
+
+          // 尝试创建指定名称和大小的基础字体
+          if let baseFontAttempt = UIFont(name: effectiveFontName, size: fontSize) {
+              if !traits.isEmpty { // 如果需要应用粗体/斜体等特性
+                  // 尝试从基础字体的描述符获取带有指定特性组合的新字体描述符
+                  if let fontDescriptorWithTraits = baseFontAttempt.fontDescriptor.withSymbolicTraits(traits) {
+                      finalFont = UIFont(descriptor: fontDescriptorWithTraits, size: fontSize) // 使用新描述符创建最终字体
+                  } else {
+                      // 如果无法为该字体应用特性 (罕见情况)，则回退到不带额外特性的基础字体
+                      finalFont = baseFontAttempt
+                      // print("DocParser: 警告 - 无法为字体 '\(effectiveFontName)' 应用特性: \(traits)。")
+                  }
+              } else { // 如果不需要应用额外特性 (traits 为空)
+                  finalFont = baseFontAttempt // 直接使用基础字体
+              }
+          } else { // 如果无法创建指定名称的字体 (例如，字体未安装在系统中)
+              // print("DocParser: 警告 - 字体 '\(effectiveFontName)' 未找到或无法加载。将使用系统默认字体。")
+              // 回退到系统默认字体，并尝试应用所需的特性
+              let systemFont = UIFont.systemFont(ofSize: fontSize)
+              if !traits.isEmpty, let fontDescriptorWithTraits = systemFont.fontDescriptor.withSymbolicTraits(traits) {
+                  finalFont = UIFont(descriptor: fontDescriptorWithTraits, size: fontSize)
+              } else { // 如果连系统字体都无法应用特性 (极罕见)，则使用原始系统字体
+                  finalFont = systemFont
+              }
+          }
+          
+          // -- 将最终计算出的属性应用到 NSAttributedString 的属性字典中 --
+          if let font = finalFont {
+              attributes[.font] = font // 应用最终字体
+          } else {
+              // 理论上 finalFont 总应该有一个值（至少是系统字体）。
+              // 作为最后的保险，如果 finalFont 意外为 nil，则设置一个全局默认字体。
+              attributes[.font] = UIFont(name: DocxConstants.defaultFontName, size: DocxConstants.defaultFontSize) ?? UIFont.systemFont(ofSize: DocxConstants.defaultFontSize)
+          }
+          
+          attributes[.foregroundColor] = foregroundColor // 应用最终文本颜色
+          
+          // 应用下划线样式
+          if isUnderline {
+              attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
+          } else {
+              attributes.removeValue(forKey: .underlineStyle) // 如果没有下划线，确保移除此属性，以防继承
+          }
+          
+          // 应用删除线样式
+          if isStrikethrough {
+              attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+          } else {
+              attributes.removeValue(forKey: .strikethroughStyle) // 如果没有删除线，确保移除
+          }
+          
+          // 应用背景高亮颜色
+          if let bgColor = highlightColor {
+              attributes[.backgroundColor] = bgColor
+          } else {
+              attributes.removeValue(forKey: .backgroundColor) // 如果没有背景高亮，确保移除
+          }
+          
+          // 处理上标/下标的基线偏移和字体大小调整
+          if verticalAlign != 0 { // 如果是上标 (1) 或下标 (2)
+              // 获取最终确定的字体（可能已应用粗体/斜体）的磅值大小，用于精确计算偏移量
+              let actualFontSizeForOffset = (finalFont ?? UIFont.systemFont(ofSize: fontSize)).pointSize
+              
+              // 设置基线偏移：上标向上偏移，下标向下偏移。这些比例因子是经验值，可调整。
+              attributes[.baselineOffset] = (verticalAlign == 1) ? (actualFontSizeForOffset * 0.35) : -(actualFontSizeForOffset * 0.25) // 下标偏移略微调整
+              
+              // 为上标/下标调整字体大小（通常缩小到约75%）。重要的是在已应用粗体/斜体等特性的字体基础上缩小。
+              if let currentBaseFontForSizing = finalFont { // 使用已确定的 finalFont
+                  let targetSize = actualFontSizeForOffset * 0.75 // 计算目标缩小后的大小
+                  // 保持原有的字体特性 (如粗体/斜体) 不变，只改变大小
+                  // 通过用当前字体的特性重新创建描述符，然后指定新大小
+                  if let smallerFontDescriptor = currentBaseFontForSizing.fontDescriptor.withSymbolicTraits(currentBaseFontForSizing.fontDescriptor.symbolicTraits) {
+                       attributes[.font] = UIFont(descriptor: smallerFontDescriptor, size: targetSize)
+                  } else { // Fallback，理论上不应发生
+                      attributes[.font] = UIFont(name: currentBaseFontForSizing.fontName, size: targetSize) ?? UIFont.systemFont(ofSize: targetSize)
+                  }
+              }
+          } else { // 如果不是上标/下标 (verticalAlign == 0)，即为普通基线文本
+              attributes.removeValue(forKey: .baselineOffset) // 确保移除基线偏移属性
+              
+              // 如果当前字体大小因为之前的上标/下标处理而被缩小了，现在需要恢复到正常的 fontSize。
+              // 同时要保持原有的粗体/斜体特性。
+              if let currentFontInAttrs = attributes[.font] as? UIFont, currentFontInAttrs.pointSize != fontSize {
+                  // 使用当前字体已有的特性，但将大小恢复到 fontSize
+                  if let restoredFontDescriptor = currentFontInAttrs.fontDescriptor.withSymbolicTraits(currentFontInAttrs.fontDescriptor.symbolicTraits) {
+                       attributes[.font] = UIFont(descriptor: restoredFontDescriptor, size: fontSize)
+                  } else { // Fallback
+                      attributes[.font] = UIFont(name: currentFontInAttrs.fontName, size: fontSize) ?? UIFont.systemFont(ofSize: fontSize)
+                  }
+              }
+          }
+          return attributes // 返回最终的属性字典
+      }
+
     
     // MARK: - Hyperlink Processing (超链接处理)
     private func processHyperlink(hyperlinkXML: XMLNode, baseRunAttributes: Attributes) throws -> NSAttributedString? {
