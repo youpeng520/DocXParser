@@ -22,7 +22,7 @@ class ViewController: UIViewController {
         do{
         
 //            let documentPath = NSSearchPathForDirectoriesInDomains(NSSearchPathDirectory.DocumentDirectory,NSSearchPathDomainMask.UserDomainMask, true)
-            if let filePath = Bundle.main.url(forResource: "cat", withExtension: "docx") {
+            if let filePath = Bundle.main.url(forResource: "lvdocx", withExtension: "docx") {
                 print("文件路径：\(filePath)")
                 let resultString = try parser.parseFile(fileURL: filePath)
                 let pdfURL = FileManager.default.temporaryDirectory.appendingPathComponent("output.pdf")

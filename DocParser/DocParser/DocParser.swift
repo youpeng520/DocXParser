@@ -261,13 +261,21 @@ class DocParser {
         var effectiveRunAttributes = Attributes()
         
         // 1. 初始：从 StyleParser 获取文档的默认段落样式属性 (包括其默认运行属性)
-        let (docDefaultParaAttrs, docDefaultRunAttrs) = styleParser.getDefaultParagraphStyleAttributes()
+        let (docDefaultRunAttrs, docDefaultParaAttrs) = styleParser.getDefaultParagraphStyleAttributes()
         effectiveParagraphAttributes.merge(docDefaultParaAttrs) { _, new in new }
         effectiveRunAttributes.merge(docDefaultRunAttrs) { _, new in new }
         
         // 2. 应用段落命名样式
         if let pStyleId = pPrNode["w:pStyle"].attributeValue(by: "w:val") {
-            let (namedParaStyleAttrs, namedRunStyleAttrs) = styleParser.getResolvedAttributes(forStyleId: pStyleId)
+          
+            
+            let (namedRunStyleAttrs, namedParaStyleAttrs) = styleParser.getResolvedAttributes(forStyleId: pStyleId)
+            
+//             print("DEBUG DocParser: For Title style '\(pStyleId)' received from StyleParser:")
+//             print("  namedRunStyleAttrs: \(namedRunStyleAttrs)")
+//             print("  namedParaStyleAttrs: \(namedParaStyleAttrs)")
+
+            
             effectiveParagraphAttributes.merge(namedParaStyleAttrs) { _, new in new }
             effectiveRunAttributes.merge(namedRunStyleAttrs) { _, new in new }
         }
