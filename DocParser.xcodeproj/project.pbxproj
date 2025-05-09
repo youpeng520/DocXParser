@@ -10,6 +10,10 @@
 		2DFEDC39B2CF7029FF456936 /* Pods_DocParser.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4ED928CF88E68FFCBE77670E /* Pods_DocParser.framework */; };
 		709987CA2DCB5EF400649405 /* example.docx in Resources */ = {isa = PBXBuildFile; fileRef = 709987C92DCB5EF400649405 /* example.docx */; };
 		7099886D2DCCAA8200649405 /* cat.docx in Resources */ = {isa = PBXBuildFile; fileRef = 7099886C2DCCAA8200649405 /* cat.docx */; };
+		7099886F2DCCABC100649405 /* lvdocx.docx in Resources */ = {isa = PBXBuildFile; fileRef = 7099886E2DCCABC100649405 /* lvdocx.docx */; };
+		709988712DCCAD6E00649405 /* JDK.docx in Resources */ = {isa = PBXBuildFile; fileRef = 709988702DCCAD6E00649405 /* JDK.docx */; };
+		709988742DCCB05700649405 /* lanq.docx in Resources */ = {isa = PBXBuildFile; fileRef = 709988732DCCB05700649405 /* lanq.docx */; };
+		709988762DCCB9FE00649405 /* StyleParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 709988752DCCB9FE00649405 /* StyleParser.swift */; };
 		70B3DBA02DC9DCE40066D0E2 /* iOS_Stretch_1.1.11.docx in Resources */ = {isa = PBXBuildFile; fileRef = 70B3DB9F2DC9DCE40066D0E2 /* iOS_Stretch_1.1.11.docx */; };
 		C9DA529F1CC774E1004582F1 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9DA529E1CC774E1004582F1 /* AppDelegate.swift */; };
 		C9DA52A11CC774E1004582F1 /* ViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9DA52A01CC774E1004582F1 /* ViewController.swift */; };
@@ -36,6 +40,11 @@
 		4ED928CF88E68FFCBE77670E /* Pods_DocParser.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_DocParser.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		709987C92DCB5EF400649405 /* example.docx */ = {isa = PBXFileReference; lastKnownFileType = file; path = example.docx; sourceTree = "<group>"; };
 		7099886C2DCCAA8200649405 /* cat.docx */ = {isa = PBXFileReference; lastKnownFileType = file; path = cat.docx; sourceTree = "<group>"; };
+		7099886E2DCCABC100649405 /* lvdocx.docx */ = {isa = PBXFileReference; lastKnownFileType = file; path = lvdocx.docx; sourceTree = "<group>"; };
+		709988702DCCAD6E00649405 /* JDK.docx */ = {isa = PBXFileReference; lastKnownFileType = file; path = JDK.docx; sourceTree = "<group>"; };
+		709988722DCCAE8F00649405 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
+		709988732DCCB05700649405 /* lanq.docx */ = {isa = PBXFileReference; lastKnownFileType = file; path = lanq.docx; sourceTree = "<group>"; };
+		709988752DCCB9FE00649405 /* StyleParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StyleParser.swift; sourceTree = "<group>"; };
 		70B3DB9F2DC9DCE40066D0E2 /* iOS_Stretch_1.1.11.docx */ = {isa = PBXFileReference; lastKnownFileType = file; path = iOS_Stretch_1.1.11.docx; sourceTree = "<group>"; };
 		73AD22F9D7CAEBC469F20921 /* Pods-DocParser.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-DocParser.release.xcconfig"; path = "Target Support Files/Pods-DocParser/Pods-DocParser.release.xcconfig"; sourceTree = "<group>"; };
 		C9DA529B1CC774E1004582F1 /* DocParser.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DocParser.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -91,6 +100,7 @@
 		C9DA52921CC774E1004582F1 = {
 			isa = PBXGroup;
 			children = (
+				709988722DCCAE8F00649405 /* README.md */,
 				C9DA529D1CC774E1004582F1 /* DocParser */,
 				C9DA52B21CC774E1004582F1 /* DocParserTests */,
 				C9DA529C1CC774E1004582F1 /* Products */,
@@ -136,6 +146,7 @@
 			isa = PBXGroup;
 			children = (
 				C9DA52BF1CC77530004582F1 /* DocParser.swift */,
+				709988752DCCB9FE00649405 /* StyleParser.swift */,
 			);
 			path = DocParser;
 			sourceTree = "<group>";
@@ -144,8 +155,11 @@
 			isa = PBXGroup;
 			children = (
 				7099886C2DCCAA8200649405 /* cat.docx */,
+				709988702DCCAD6E00649405 /* JDK.docx */,
+				709988732DCCB05700649405 /* lanq.docx */,
 				709987C92DCB5EF400649405 /* example.docx */,
 				70B3DB9F2DC9DCE40066D0E2 /* iOS_Stretch_1.1.11.docx */,
+				7099886E2DCCABC100649405 /* lvdocx.docx */,
 				C9DA52C21CC77C79004582F1 /* Fable.docx */,
 			);
 			path = Document;
@@ -239,9 +253,12 @@
 				7099886D2DCCAA8200649405 /* cat.docx in Resources */,
 				C9DA52A91CC774E1004582F1 /* LaunchScreen.storyboard in Resources */,
 				709987CA2DCB5EF400649405 /* example.docx in Resources */,
+				7099886F2DCCABC100649405 /* lvdocx.docx in Resources */,
 				C9DA52A61CC774E1004582F1 /* Assets.xcassets in Resources */,
 				C9DA52A41CC774E1004582F1 /* Main.storyboard in Resources */,
 				70B3DBA02DC9DCE40066D0E2 /* iOS_Stretch_1.1.11.docx in Resources */,
+				709988712DCCAD6E00649405 /* JDK.docx in Resources */,
+				709988742DCCB05700649405 /* lanq.docx in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -306,6 +323,7 @@
 			files = (
 				C9DA52A11CC774E1004582F1 /* ViewController.swift in Sources */,
 				C9DA529F1CC774E1004582F1 /* AppDelegate.swift in Sources */,
+				709988762DCCB9FE00649405 /* StyleParser.swift in Sources */,
 				C9DA52C01CC77530004582F1 /* DocParser.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
