@@ -154,88 +154,108 @@ class DocParser {
     // MARK: - Paragraph Processing (段落处理)
     // 处理单个 <w:p> 元素
     private func processParagraph(paragraphXML: XMLNode) throws -> NSAttributedString {
-        let paragraphAttributedString = NSMutableAttributedString()
-        
-        // 1. 解析段落属性 (<w:pPr>)，考虑样式继承和直接定义，获取最终生效的段落属性和段内默认运行属性
-        //    `effectiveParagraphAttrs` 包含最终的 NSParagraphStyle
-        //    `defaultRunAttrsForPara` 是此段落内文本运行的默认起始属性
-        let (effectiveParagraphAttrs, defaultRunAttrsForPara) =
-            try parseParagraphProperties(fromPPrNode: paragraphXML["w:pPr"])
+           let paragraphAttributedString = NSMutableAttributedString()
+           
+           // 1. 解析段落属性 (<w:pPr>)，考虑样式继承和直接定义，获取最终生效的段落属性和段内默认运行属性
+           //    `effectiveParagraphAttrs` 包含最终的 NSParagraphStyle
+           //    `defaultRunAttrsForPara` 是此段落内文本运行的默认起始属性
+           let (effectiveParagraphAttrs, defaultRunAttrsForPara) =
+               try parseParagraphProperties(fromPPrNode: paragraphXML["w:pPr"])
 
-        // 2. 处理列表项前缀 (如果 <w:numPr> 存在)
-        var listItemPrefix = ""
-        let numPrIndexer = paragraphXML["w:pPr"]["w:numPr"] // 数字编号属性 <w:numPr>
-        if numPrIndexer.element != nil {
-            let level = numPrIndexer["w:ilvl"].attributeValue(by: "w:val").flatMap { Int($0) } ?? 0 // 列表级别 <w:ilvl w:val="0">
-            // TODO: 完整列表格式化需解析 numbering.xml。目前使用占位符。
-            let indent = String(repeating: "    ", count: level) // 示例：每级缩进4空格
-            let numberPlaceholder = "•" // 通用占位符，应从 numbering.xml 获取实际编号格式
-            listItemPrefix = indent + numberPlaceholder + " "
-            
-            // 列表项前缀使用段落的默认运行属性
-            var prefixActualAttrs = defaultRunAttrsForPara
-            if prefixActualAttrs[.font] == nil { // 确保字体属性存在 (以防万一)
-                prefixActualAttrs[.font] = UIFont(name: DocxConstants.defaultFontName, size: DocxConstants.defaultFontSize)
-            }
-            paragraphAttributedString.append(NSAttributedString(string: listItemPrefix, attributes: prefixActualAttrs))
-        }
+           // 2. 处理列表项前缀 (如果 <w:numPr> 存在)
+           var listItemPrefix = "" // 初始化列表项前缀为空字符串
+           let numPrIndexer = paragraphXML["w:pPr"]["w:numPr"] // 获取段落属性中的数字编号属性 <w:numPr>
+           
+           // 检查 <w:numPr> 是否存在。如果存在，表示这可能是一个列表项。
+           if numPrIndexer.element != nil {
+               // 获取列表级别 <w:ilvl w:val="0">。默认为0级。
+               let level = numPrIndexer["w:ilvl"].attributeValue(by: "w:val").flatMap { Int($0) } ?? 0
+               
+               // TODO: 完整的列表格式化需要解析 numbering.xml 文件以获取真实的编号/项目符号。
+               //       目前下面的代码是基于占位符的简化处理。
 
-        // 3. 遍历段落内的子元素（文本运行 <w:r>、超链接 <w:hyperlink>、图片等）
-        for node in paragraphXML.children {
-            var appendedString: NSAttributedString? = nil // 用于收集当前子元素处理后的富文本
+               // 根据列表级别计算缩进字符串。示例：每级缩进4个空格。
+               let indent = String(repeating: "    ", count: level)
+               
+               // --- 修改点：移除硬编码的 "•" 占位符 ---
+               // 原始逻辑会在这里定义一个 numberPlaceholder = "•" 并将其与 indent 组合。
+               // 例如:
+               //   let numberPlaceholder = "•"
+               //   listItemPrefix = indent + numberPlaceholder + " "
+               //
+               // 新逻辑：仅使用计算出的缩进作为前缀。
+               // "•" 字符及其后的空格已被移除。
+               // 如果未来实现了 numbering.xml 的解析，这里的逻辑需要更新，
+               // 以便使用从 numbering.xml 中获取的实际列表标记来替换或增强此处的 indent。
+               listItemPrefix = indent // 仅保留缩进，移除了 "•" 和其后的空格
+               
+               // 如果 listItemPrefix (即缩进字符串) 不为空，则将其添加到段落富文本中。
+               if !listItemPrefix.isEmpty {
+                   // 列表项前缀（现在通常只有缩进）使用段落的默认运行属性
+                   var prefixActualAttrs = defaultRunAttrsForPara
+                   if prefixActualAttrs[.font] == nil { // 确保字体属性存在 (以防万一默认属性中没有字体)
+                       prefixActualAttrs[.font] = UIFont(name: DocxConstants.defaultFontName, size: DocxConstants.defaultFontSize)
+                   }
+                   paragraphAttributedString.append(NSAttributedString(string: listItemPrefix, attributes: prefixActualAttrs))
+               }
+           }
+           // --- 修改结束 ---
 
-            if node.element?.name == "w:r" { // 文本运行 (Run)
-                // 传入段落的默认运行属性作为基础，processRun 会再应用运行自身的样式和直接格式
-                appendedString = try processRun(runXML: node, baseRunAttributes: defaultRunAttrsForPara)
-            } else if node.element?.name == "w:hyperlink" { // 超链接
-                appendedString = try processHyperlink(hyperlinkXML: node, baseRunAttributes: defaultRunAttrsForPara)
-            } else if node.element?.name == "w:drawing" || node.element?.name == "w:pict" { // 图像 (DrawingML 或 VML)
-                appendedString = try processDrawing(drawingXML: node)
-            } else if node.element?.name == "w:sym" { // 符号 (Symbol), 如 Wingdings 字体字符
-                 if let charHex = node.attributeValue(by: "w:char"), // 符号十六进制字符代码 <w:char w:val="F0A7">
-                    let fontName = node.attributeValue(by: "w:font") { // 符号字体 <w:font w:val="Wingdings">
-                     var symAttrs = defaultRunAttrsForPara // 符号使用段落默认运行属性
-                     // 尝试使用符号指定的字体
-                     if let symFont = UIFont(name: fontName, size: (symAttrs[.font] as? UIFont)?.pointSize ?? DocxConstants.defaultFontSize) {
-                         symAttrs[.font] = symFont
-                     }
-                     // 将十六进制字符代码转为实际字符
-                     if let charCode = UInt32(charHex, radix: 16), let unicodeScalar = UnicodeScalar(charCode) {
-                         appendedString = NSAttributedString(string: String(Character(unicodeScalar)), attributes: symAttrs)
-                     }
-                 }
-            } else if node.element?.name == "w:tab" { // 显式制表符 <w:tab/>
-                 appendedString = NSAttributedString(string: "\t", attributes: defaultRunAttrsForPara)
-            } else if node.element?.name == "w:br" { // 段内换行符 <w:br/>
-                 // TODO: 可检查 <w:br w:type="page"/> 实现分页符处理
-                 appendedString = NSAttributedString(string: "\n", attributes: defaultRunAttrsForPara)
-             } else if node.element?.name == "w:smartTag" || node.element?.name == "w:proofErr" { // 智能标签或校对错误标记 (通常包含实际文本)
-                 // 遍历这些标签内的子元素 (通常是 <w:r>)
-                 let tempString = NSMutableAttributedString()
-                 for child in node.children {
-                     if child.element?.name == "w:r" {
-                         if let runStr = try processRun(runXML: child, baseRunAttributes: defaultRunAttrsForPara) {
-                             tempString.append(runStr)
-                         }
-                     }
-                 }
-                 if tempString.length > 0 { appendedString = tempString }
-             }
-            // <w:pPr> (段落属性) 在开头已处理，此处忽略。
-            
-            // 如果成功处理了子元素，则追加到段落富文本中
-            if let str = appendedString {
-                paragraphAttributedString.append(str)
-            }
-        }
+           // 3. 遍历段落内的子元素（文本运行 <w:r>、超链接 <w:hyperlink>、图片等）
+           for node in paragraphXML.children {
+               var appendedString: NSAttributedString? = nil // 用于收集当前子元素处理后的富文本
 
-        // 4. 将解析出的段落级属性 (对齐、间距、缩进等) 应用于整个段落的富文本。
-        if paragraphAttributedString.length > 0 {
-            paragraphAttributedString.addAttributes(effectiveParagraphAttrs, range: NSRange(location: 0, length: paragraphAttributedString.length))
-        }
-        return paragraphAttributedString
-    }
+               if node.element?.name == "w:r" { // 文本运行 (Run)
+                   // 传入段落的默认运行属性作为基础，processRun 会再应用运行自身的样式和直接格式
+                   appendedString = try processRun(runXML: node, baseRunAttributes: defaultRunAttrsForPara)
+               } else if node.element?.name == "w:hyperlink" { // 超链接
+                   appendedString = try processHyperlink(hyperlinkXML: node, baseRunAttributes: defaultRunAttrsForPara)
+               } else if node.element?.name == "w:drawing" || node.element?.name == "w:pict" { // 图像 (DrawingML 或 VML)
+                   appendedString = try processDrawing(drawingXML: node)
+               } else if node.element?.name == "w:sym" { // 符号 (Symbol), 如 Wingdings 字体字符
+                    if let charHex = node.attributeValue(by: "w:char"), // 符号十六进制字符代码 <w:char w:val="F0A7">
+                       let fontName = node.attributeValue(by: "w:font") { // 符号字体 <w:font w:val="Wingdings">
+                        var symAttrs = defaultRunAttrsForPara // 符号使用段落默认运行属性
+                        // 尝试使用符号指定的字体
+                        if let symFont = UIFont(name: fontName, size: (symAttrs[.font] as? UIFont)?.pointSize ?? DocxConstants.defaultFontSize) {
+                            symAttrs[.font] = symFont
+                        }
+                        // 将十六进制字符代码转为实际字符
+                        if let charCode = UInt32(charHex, radix: 16), let unicodeScalar = UnicodeScalar(charCode) {
+                            appendedString = NSAttributedString(string: String(Character(unicodeScalar)), attributes: symAttrs)
+                        }
+                    }
+               } else if node.element?.name == "w:tab" { // 显式制表符 <w:tab/>
+                    appendedString = NSAttributedString(string: "\t", attributes: defaultRunAttrsForPara)
+               } else if node.element?.name == "w:br" { // 段内换行符 <w:br/>
+                    // TODO: 可检查 <w:br w:type="page"/> 实现分页符处理
+                    appendedString = NSAttributedString(string: "\n", attributes: defaultRunAttrsForPara)
+                } else if node.element?.name == "w:smartTag" || node.element?.name == "w:proofErr" { // 智能标签或校对错误标记 (通常包含实际文本)
+                    // 遍历这些标签内的子元素 (通常是 <w:r>)
+                    let tempString = NSMutableAttributedString()
+                    for child in node.children {
+                        if child.element?.name == "w:r" {
+                            if let runStr = try processRun(runXML: child, baseRunAttributes: defaultRunAttrsForPara) {
+                                tempString.append(runStr)
+                            }
+                        }
+                    }
+                    if tempString.length > 0 { appendedString = tempString }
+                }
+               // <w:pPr> (段落属性) 在开头已处理，此处忽略。
+               
+               // 如果成功处理了子元素，则追加到段落富文本中
+               if let str = appendedString {
+                   paragraphAttributedString.append(str)
+               }
+           }
 
+           // 4. 将解析出的段落级属性 (对齐、间距、缩进等) 应用于整个段落的富文本。
+           if paragraphAttributedString.length > 0 {
+               paragraphAttributedString.addAttributes(effectiveParagraphAttrs, range: NSRange(location: 0, length: paragraphAttributedString.length))
+           }
+           return paragraphAttributedString
+       }
     // MARK: - Paragraph Property Parsing (Revised for Styles) (段落属性解析 - 已为样式修改)
     /**
      * 解析 <w:pPr> (段落属性) 元素，综合考虑文档默认样式、命名段落样式及直接定义的属性。
