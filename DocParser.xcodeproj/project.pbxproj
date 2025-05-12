@@ -14,6 +14,7 @@
 		709988712DCCAD6E00649405 /* JDK.docx in Resources */ = {isa = PBXBuildFile; fileRef = 709988702DCCAD6E00649405 /* JDK.docx */; };
 		709988742DCCB05700649405 /* lanq.docx in Resources */ = {isa = PBXBuildFile; fileRef = 709988732DCCB05700649405 /* lanq.docx */; };
 		709988762DCCB9FE00649405 /* StyleParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 709988752DCCB9FE00649405 /* StyleParser.swift */; };
+		709988F62DCE18FD00649405 /* www.docx in Resources */ = {isa = PBXBuildFile; fileRef = 709988F52DCE18FD00649405 /* www.docx */; };
 		70B3DBA02DC9DCE40066D0E2 /* iOS_Stretch_1.1.11.docx in Resources */ = {isa = PBXBuildFile; fileRef = 70B3DB9F2DC9DCE40066D0E2 /* iOS_Stretch_1.1.11.docx */; };
 		C9DA529F1CC774E1004582F1 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9DA529E1CC774E1004582F1 /* AppDelegate.swift */; };
 		C9DA52A11CC774E1004582F1 /* ViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9DA52A01CC774E1004582F1 /* ViewController.swift */; };
@@ -45,6 +46,7 @@
 		709988722DCCAE8F00649405 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		709988732DCCB05700649405 /* lanq.docx */ = {isa = PBXFileReference; lastKnownFileType = file; path = lanq.docx; sourceTree = "<group>"; };
 		709988752DCCB9FE00649405 /* StyleParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StyleParser.swift; sourceTree = "<group>"; };
+		709988F52DCE18FD00649405 /* www.docx */ = {isa = PBXFileReference; lastKnownFileType = file; path = www.docx; sourceTree = "<group>"; };
 		70B3DB9F2DC9DCE40066D0E2 /* iOS_Stretch_1.1.11.docx */ = {isa = PBXFileReference; lastKnownFileType = file; path = iOS_Stretch_1.1.11.docx; sourceTree = "<group>"; };
 		73AD22F9D7CAEBC469F20921 /* Pods-DocParser.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-DocParser.release.xcconfig"; path = "Target Support Files/Pods-DocParser/Pods-DocParser.release.xcconfig"; sourceTree = "<group>"; };
 		C9DA529B1CC774E1004582F1 /* DocParser.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DocParser.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -157,6 +159,7 @@
 				7099886C2DCCAA8200649405 /* cat.docx */,
 				709988702DCCAD6E00649405 /* JDK.docx */,
 				709988732DCCB05700649405 /* lanq.docx */,
+				709988F52DCE18FD00649405 /* www.docx */,
 				709987C92DCB5EF400649405 /* example.docx */,
 				70B3DB9F2DC9DCE40066D0E2 /* iOS_Stretch_1.1.11.docx */,
 				7099886E2DCCABC100649405 /* lvdocx.docx */,
@@ -250,6 +253,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				C9DA52C31CC77C79004582F1 /* Fable.docx in Resources */,
+				709988F62DCE18FD00649405 /* www.docx in Resources */,
 				7099886D2DCCAA8200649405 /* cat.docx in Resources */,
 				C9DA52A91CC774E1004582F1 /* LaunchScreen.storyboard in Resources */,
 				709987CA2DCB5EF400649405 /* example.docx in Resources */,
