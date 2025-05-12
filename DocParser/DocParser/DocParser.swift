@@ -47,6 +47,7 @@ class DocParser {
     private var relationships: [String: String] = [:] // 存储关系ID到目标路径的映射 (例如 rId1 -> media/image1.png)
     private var mediaBaseURL: URL?                    // 解压后 'word' 目录的URL，用于构建媒体文件的完整路径
     private let styleParser = StyleParser()           // << 集成的样式解析器实例 >>
+    private var themeManager: ThemeManager?           // << 新增ThemeManager实例 >>
     
     // MARK: - Public Interface (公共接口)
     /**
@@ -68,6 +69,21 @@ class DocParser {
         
         // 设置媒体文件的基础URL (通常是 word/media/ 目录，但关系路径会包含 "media/")
         self.mediaBaseURL = unzipDirectory.appendingPathComponent("word", isDirectory: true)
+        
+        // 初始化并解析主题文件（注意：要放在解析 styles.xml 或 document.xml 之前，因为他们有可能使用主题）
+        self.themeManager = ThemeManager()
+        let themeFileURL = unzipDirectory.appendingPathComponent("word/theme/theme1.xml")
+        if FileManager.default.fileExists(atPath: themeFileURL.path) {
+            do {
+                try self.themeManager?.parseTheme(themeFileURL: themeFileURL)
+                // print("DocParser: 主题文件解析成功。")
+            } catch {
+                print("DocParser: 解析主题文件失败: \(error)。将继续而不使用自定义主题颜色。")
+                //可以选择抛出错误，或者允许在没有主题的情况下继续
+            }
+        } else {
+            print("DocParser: 主题文件 'word/theme/theme1.xml' 未找到。")
+        }
         
         // 2. 解析关系文件 (word/_rels/document.xml.rels)
         // 这个文件定义了主文档中引用的外部资源（如图片、超链接）的ID和实际路径。
@@ -306,6 +322,60 @@ class DocParser {
             effectiveRunAttributes.merge(directPPrRunAttrs) { _, new in new }
         }
         
+        // << 新增：处理段落底纹颜色 >>
+          var paragraphBackgroundColor: UIColor?
+
+          // 1. 优先处理 <w:pPr><w:shd> 中直接定义的颜色
+          let shdNodeInPPr = pPrNode["w:shd"]
+          if shdNodeInPPr.element != nil {
+              var shdColorResolved = false
+              if let fillHex = shdNodeInPPr.attributeValue(by: "w:fill"), fillHex.lowercased() != "auto" {
+                  if let color = UIColor(hex: fillHex) {
+                      paragraphBackgroundColor = color
+                      shdColorResolved = true
+                  }
+              }
+              if !shdColorResolved, let themeFill = shdNodeInPPr.attributeValue(by: "w:themeFill") {
+                  let themeTint = shdNodeInPPr.attributeValue(by: "w:themeFillTint")
+                  let themeShade = shdNodeInPPr.attributeValue(by: "w:themeFillShade")
+                  // 假设 themeManager 已初始化
+                  paragraphBackgroundColor = themeManager?.getColor(forName: themeFill, tint: themeTint, shade: themeShade)
+                  shdColorResolved = true
+              }
+              // 可以添加对 w:val (预定义颜色如 "clear", "solid") 的处理
+              if !shdColorResolved && shdNodeInPPr.attributeValue(by: "w:val") == "clear" { // "clear" 意味着无填充
+                   paragraphBackgroundColor = nil // 确保是nil
+                   shdColorResolved = true
+              }
+          }
+
+          // 2. 如果 <w:pPr><w:shd> 未定义或未解析成功，则尝试从样式继承的指令中获取
+          if paragraphBackgroundColor == nil {
+              if let styleBgHex = effectiveParagraphAttributes[ExtendedDocxStyleAttributes.paragraphBackgroundColorHex] as? String,
+                 let color = UIColor(hex: styleBgHex) {
+                  paragraphBackgroundColor = color
+              } else if let styleBgThemeName = effectiveParagraphAttributes[ExtendedDocxStyleAttributes.paragraphBackgroundThemeColorName] as? String {
+                  let styleBgThemeTint = effectiveParagraphAttributes[ExtendedDocxStyleAttributes.paragraphBackgroundThemeColorTint] as? String
+                  let styleBgThemeShade = effectiveParagraphAttributes[ExtendedDocxStyleAttributes.paragraphBackgroundThemeColorShade] as? String
+                  paragraphBackgroundColor = themeManager?.getColor(forName: styleBgThemeName, tint: styleBgThemeTint, shade: styleBgThemeShade)
+              }
+          }
+          
+          if let bgColor = paragraphBackgroundColor {
+              // 将段落背景色添加到段落级属性中
+              // 注意：NSAttributedString.Key.backgroundColor 通常用于文本运行的背景（高亮）
+              // 对于整个段落的背景色，在绘制时可能需要特殊处理，或者如果目标是UILabel/UITextView，
+              // 它们可能不直接支持整个段落块的独立背景色（不同于文本高亮）。
+              // 如果你的目标是生成PDF，你可以在PDF绘制段落时填充一个矩形。
+              // 如果是显示在UITextView，可能需要自定义绘制或使用其他技巧。
+              // 为了简单起见，我们还是先设置它，看看效果。
+              effectiveParagraphAttributes[.backgroundColor] = bgColor
+          } else {
+              // 如果没有解析到背景色，且 effectiveParagraphAttributes 中可能从样式继承了backgroundColor，则移除它
+               effectiveParagraphAttributes.removeValue(forKey: .backgroundColor)
+          }
+          // << 段落底纹颜色处理结束 >>
+        
         // ---- 清理 effectiveParagraphAttributes 中的运行级属性 ----
         // ---- 这是解决问题的关键步骤 ----
         let runAttributeKeys: [NSAttributedString.Key] = [
@@ -319,7 +389,16 @@ class DocParser {
         // print("DEBUG: parseParagraphProperties - BEFORE cleanup, effectiveParagraphAttributes contains font: \(effectiveParagraphAttributes[.font] != nil), color: \(effectiveParagraphAttributes[.foregroundColor] != nil)")
         
         for key in runAttributeKeys {
-            effectiveParagraphAttributes.removeValue(forKey: key)
+            if key == .backgroundColor && effectiveParagraphAttributes[key] != nil {
+                       // 如果 .backgroundColor 已经被段落底纹设置了，这里就不应该移除它。
+                       // 这是一个潜在的冲突点。如果一个段落有底纹，那么其内部文本运行的高亮（也用.backgroundColor）如何处理？
+                       // Word中，文本高亮优先于段落底纹显示。
+                       // 如果我们用 .backgroundColor 同时表示两者，那么段落底纹会先生效，
+                       // 然后在 processRun 中，如果文本运行有自己的高亮，会用新的 .backgroundColor 覆盖。这似乎是期望的行为。
+                       // 所以，如果 .backgroundColor 是被段落底纹设置的，先不要在这一步移除。
+                   } else {
+                       effectiveParagraphAttributes.removeValue(forKey: key)
+                   }
         }
         
         // print("DEBUG: parseParagraphProperties - AFTER cleanup, effectiveParagraphAttributes contains font: \(effectiveParagraphAttributes[.font] != nil), color: \(effectiveParagraphAttributes[.foregroundColor] != nil)")
@@ -400,7 +479,17 @@ class DocParser {
         var isStrikethrough = (baseAttributes[.strikethroughStyle] as? NSNumber)?.intValue == NSUnderlineStyle.single.rawValue
         
         // 初始文本颜色从基础属性推断，如果基础属性中没有颜色，则默认为黑色
-        var foregroundColor = baseAttributes[.foregroundColor] as? UIColor ?? UIColor.black
+        // 默认前景色：首先尝试从基础属性获取，然后是文档默认，最后是纯黑
+        var foregroundColor = baseAttributes[.foregroundColor] as? UIColor
+        if foregroundColor == nil { // 如果基础属性没有颜色
+               // 尝试从样式解析器获取“文档默认字符样式”的颜色（可能已受主题影响）
+               // 注意：StyleParser现在不直接解析主题颜色，所以这一步可能不会得到主题色
+               // 我们依赖下面对 <w:color> 的显式处理
+               foregroundColor = styleParser.getDefaultCharacterStyleAttributes()[.foregroundColor] as? UIColor
+          }
+          if foregroundColor == nil { // 如果还是没有，尝试主题管理器的默认文本颜色
+              foregroundColor = themeManager?.getDefaultTextColor() ?? UIColor.black
+          }
         // 背景高亮色，可能为nil
         var highlightColor = baseAttributes[.backgroundColor] as? UIColor
         
@@ -481,24 +570,62 @@ class DocParser {
             }
             
             // 文本颜色 (<w:color>)
-            // w:val 可以是 "auto", RRGGBB 十六进制值, 或涉及主题颜色 (w:themeColor)。
-            if let colorNode = runPropertyXML["w:color"].element, // 确保 <w:color> 节点存在
-               let colorVal = colorNode.attribute(by: "w:val")?.text { // 获取 w:val 的值
-                
-                if colorVal.lowercased() == "auto" {
-                    // "auto" 颜色通常表示继承自更高层级样式或文档的默认文本颜色 (一般是黑色)。
-                    // 这里尝试从 StyleParser 获取文档默认字符样式的颜色，若无，则默认为黑色。
-                    foregroundColor = styleParser.getDefaultCharacterStyleAttributes()[.foregroundColor] as? UIColor ?? UIColor.black
-                } else if colorNode.attribute(by: "w:themeColor")?.text != nil {
-                    // TODO: 主题颜色处理。这需要解析 themeN.xml 文件和颜色变换 (如 w:themeTint, w:themeShade)。
-                    // 暂时的处理：如果指定了主题颜色但当前不支持解析，foregroundColor 将保持从 baseAttributes 继承的值。
-                    // print("DocParser: 主题颜色 (\(colorVal), theme: \(themeColorName!)) 暂未完全支持，颜色可能不准确。")
-                } else if let color = UIColor(hex: colorVal) { // 尝试将 w:val 解析为十六进制颜色
-                    foregroundColor = color // 如果解析成功，则更新文本颜色
-                }
-                // 如果 w:val 既不是 "auto"，也不是有效十六进制，且不是（当前支持的）主题颜色，
-                // foregroundColor 将保持其从 baseAttributes 继承的初始值。
-            }
+//            // w:val 可以是 "auto", RRGGBB 十六进制值, 或涉及主题颜色 (w:themeColor)。
+//            if let colorNode = runPropertyXML["w:color"].element, // 确保 <w:color> 节点存在
+//               let colorVal = colorNode.attribute(by: "w:val")?.text { // 获取 w:val 的值
+//                
+//                if colorVal.lowercased() == "auto" {
+//                    // "auto" 颜色通常表示继承自更高层级样式或文档的默认文本颜色 (一般是黑色)。
+//                    // 这里尝试从 StyleParser 获取文档默认字符样式的颜色，若无，则默认为黑色。
+//                    foregroundColor = styleParser.getDefaultCharacterStyleAttributes()[.foregroundColor] as? UIColor ?? UIColor.black
+//                } else if colorNode.attribute(by: "w:themeColor")?.text != nil {
+//                    // TODO: 主题颜色处理。这需要解析 themeN.xml 文件和颜色变换 (如 w:themeTint, w:themeShade)。
+//                    // 暂时的处理：如果指定了主题颜色但当前不支持解析，foregroundColor 将保持从 baseAttributes 继承的值。
+//                    // print("DocParser: 主题颜色 (\(colorVal), theme: \(themeColorName!)) 暂未完全支持，颜色可能不准确。")
+//                } else if let color = UIColor(hex: colorVal) { // 尝试将 w:val 解析为十六进制颜色
+//                    foregroundColor = color // 如果解析成功，则更新文本颜色
+//                }
+//                // 如果 w:val 既不是 "auto"，也不是有效十六进制，且不是（当前支持的）主题颜色，
+//                // foregroundColor 将保持其从 baseAttributes 继承的初始值。
+//            }
+            
+            if let colorNode = runPropertyXML["w:color"].element { // 确保 <w:color> 节点存在
+                       var colorResolved = false
+                       // 1. 最高优先级：直接定义的十六进制颜色 <w:color w:val="RRGGBB"/>
+                       if let colorValHex = colorNode.attribute(by: "w:val")?.text, colorValHex.lowercased() != "auto" {
+                           if let color = UIColor(hex: colorValHex) {
+                               foregroundColor = color
+                               colorResolved = true
+                           }
+                       }
+
+                       // 2. 次高优先级：主题颜色 <w:color w:themeColor="accent1" w:themeTint="BF"/>
+                       if !colorResolved, let themeColorName = colorNode.attribute(by: "w:themeColor")?.text {
+                           let themeTint = colorNode.attribute(by: "w:themeTint")?.text
+                           let themeShade = colorNode.attribute(by: "w:themeShade")?.text
+                           
+                           if let themeColor = themeManager?.getColor(forName: themeColorName, tint: themeTint, shade: themeShade) {
+                               foregroundColor = themeColor
+                               colorResolved = true
+                           } else {
+                               // print("DocParser: 无法从主题解析颜色: \(themeColorName), tint: \(themeTint ?? "nil"), shade: \(themeShade ?? "nil")")
+                               // 如果主题颜色解析失败，foregroundColor 会保持之前的值（可能来自 baseAttributes 或默认的黑色）
+                           }
+                       }
+                       
+                       // 3. "auto" 颜色 或 未指定颜色但<w:color>存在 (通常意味着使用默认)
+                       if !colorResolved && (colorNode.attribute(by: "w:val")?.text.lowercased() == "auto" || (!colorResolved && colorNode.allAttributes.isEmpty && colorNode.attribute(by: "w:themeColor") == nil) ) {
+                           // "auto" 通常意味着继承或使用文档默认文本颜色（可能是主题的 dk1 或 tx1）
+                           foregroundColor = themeManager?.getDefaultTextColor() ?? UIColor.black
+                           colorResolved = true
+                       }
+                       // 如果 <w:color> 节点存在，但无法解析出任何有效颜色（例如无效的 themeColorName），
+                       // foregroundColor 将保持其从 baseAttributes 继承的或更早设置的默认值。
+                   }
+                   // 如果 <w:rPr> 中没有 <w:color> 标签，foregroundColor 将保持其从 baseAttributes 或上面设置的初始默认值继承。
+
+            
+            
             
             // 高亮颜色 (<w:highlight>)
             // w:val 是预定义的颜色名称字符串，如 "yellow", "green" 等。
@@ -521,6 +648,21 @@ class DocParser {
                 }
             }
         } // 结束对 <w:rPr> 内部属性的解析
+        if attributes[.foregroundColor] == nil && // 当前 attributes 中还没有前景颜色
+              runPropertyXML["w:color"].element == nil // 并且rPr中也没有<w:color>元素
+           {
+               if let styleThemeColorName = baseAttributes[ExtendedDocxStyleAttributes.themeColorName] as? String {
+                   let styleThemeTint = baseAttributes[ExtendedDocxStyleAttributes.themeColorTint] as? String
+                   let styleThemeShade = baseAttributes[ExtendedDocxStyleAttributes.themeColorShade] as? String
+                   if let themeColorFromStyle = themeManager?.getColor(forName: styleThemeColorName, tint: styleThemeTint, shade: styleThemeShade) {
+                       foregroundColor = themeColorFromStyle
+                   }
+               } else if let styleHexColor = baseAttributes[ExtendedDocxStyleAttributes.foregroundColorHex] as? String,
+                         let color = UIColor(hex: styleHexColor) {
+                   foregroundColor = color
+               }
+           }
+        
         
         // -- 根据解析到的状态 (isBold, isItalic, fontNameFromDocx, fontSize 等) 构建最终字体 --
         var traits: UIFontDescriptor.SymbolicTraits = [] // 用于存储字体特性（粗体、斜体）
@@ -565,7 +707,7 @@ class DocParser {
             attributes[.font] = UIFont(name: DocxConstants.defaultFontName, size: DocxConstants.defaultFontSize) ?? UIFont.systemFont(ofSize: DocxConstants.defaultFontSize)
         }
         
-        attributes[.foregroundColor] = foregroundColor // 应用最终文本颜色
+        attributes[.foregroundColor] = foregroundColor // 应用最终文本颜色(可能来自主题)
         
         // 应用下划线样式
         if isUnderline {
@@ -755,6 +897,9 @@ class DocParser {
     }
     
     // MARK: - Table Processing & Helpers (表格处理及辅助函数)
+    /*
+     如果表格单元格背景色 (<w:shd w:fill="RRGGBB" w:themeFill="accent1"/>) 或段落底纹也需要支持主题色，那么在 processTable (针对单元格的 tcPr) 或 parseParagraphProperties (针对段落的 pPr) 中解析 <w:shd> 时，也需要类似 parseRunPropertiesFromNode 中处理 <w:color> 的逻辑，并使用 themeManager
+     */
     private func processTable(tableXML: XMLNode) throws -> NSAttributedString {
         var columnWidthsTwips: [CGFloat] = []
         var defaultTableBorders = TableBorders()
@@ -876,11 +1021,28 @@ class DocParser {
                     }
                     
                     let shdIndexer = tcPrIndexer["w:shd"]
-                    if shdIndexer.element != nil,
-                       let fillHex = shdIndexer.attributeValue(by: "w:fill"),
-                       fillHex.lowercased() != "auto",
-                       let color = UIColor(hex: fillHex) {
-                        cellBackgroundColor = color
+                    if shdIndexer.element != nil {
+                        var resolvedCellBackgroundColor: UIColor? = nil
+                        // 1. 优先使用 w:fill (直接十六进制)
+                        if let fillHex = shdIndexer.attributeValue(by: "w:fill"), fillHex.lowercased() != "auto" {
+                            if let color = UIColor(hex: fillHex) {
+                                resolvedCellBackgroundColor = color
+                            }
+                        }
+                        // 2. 如果没有直接fill，尝试主题填充 w:themeFill
+                        if resolvedCellBackgroundColor == nil, let themeFillName = shdIndexer.attributeValue(by: "w:themeFill") {
+                            let themeFillTint = shdIndexer.attributeValue(by: "w:themeFillTint")
+                            let themeFillShade = shdIndexer.attributeValue(by: "w:themeFillShade")
+                            // 注意：themeFillTtint/Shade 的 w:val 是 0-100000 的整数，需要转换为 ThemeManager.percentageFromHex 能接受的格式
+                            // 或者 ThemeManager.percentageFromHex 需要扩展以处理这种整数百分比字符串
+                            // 为简单起见，假设 ThemeManager 可以处理这些值或它们是预期的格式
+                            resolvedCellBackgroundColor = themeManager?.getColor(forName: themeFillName, tint: themeFillTint, shade: themeFillShade)
+                        }
+                        // 3. w:val="auto" 或无颜色定义但有<w:shd>，通常表示无填充或继承文档背景
+                        //    我们这里如果没有解析到颜色，cellBackgroundColor 就保持为 nil
+                        if resolvedCellBackgroundColor != nil {
+                             cellBackgroundColor = resolvedCellBackgroundColor
+                        }
                     }
                     
                     let tcBordersIndexer = tcPrIndexer["w:tcBorders"]

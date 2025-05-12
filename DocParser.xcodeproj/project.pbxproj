@@ -15,6 +15,7 @@
 		709988742DCCB05700649405 /* lanq.docx in Resources */ = {isa = PBXBuildFile; fileRef = 709988732DCCB05700649405 /* lanq.docx */; };
 		709988762DCCB9FE00649405 /* StyleParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 709988752DCCB9FE00649405 /* StyleParser.swift */; };
 		709988F62DCE18FD00649405 /* www.docx in Resources */ = {isa = PBXBuildFile; fileRef = 709988F52DCE18FD00649405 /* www.docx */; };
+		709989192DD1A82400649405 /* ThemeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 709989182DD1A82400649405 /* ThemeManager.swift */; };
 		70B3DBA02DC9DCE40066D0E2 /* iOS_Stretch_1.1.11.docx in Resources */ = {isa = PBXBuildFile; fileRef = 70B3DB9F2DC9DCE40066D0E2 /* iOS_Stretch_1.1.11.docx */; };
 		C9DA529F1CC774E1004582F1 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9DA529E1CC774E1004582F1 /* AppDelegate.swift */; };
 		C9DA52A11CC774E1004582F1 /* ViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9DA52A01CC774E1004582F1 /* ViewController.swift */; };
@@ -47,6 +48,7 @@
 		709988732DCCB05700649405 /* lanq.docx */ = {isa = PBXFileReference; lastKnownFileType = file; path = lanq.docx; sourceTree = "<group>"; };
 		709988752DCCB9FE00649405 /* StyleParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StyleParser.swift; sourceTree = "<group>"; };
 		709988F52DCE18FD00649405 /* www.docx */ = {isa = PBXFileReference; lastKnownFileType = file; path = www.docx; sourceTree = "<group>"; };
+		709989182DD1A82400649405 /* ThemeManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeManager.swift; sourceTree = "<group>"; };
 		70B3DB9F2DC9DCE40066D0E2 /* iOS_Stretch_1.1.11.docx */ = {isa = PBXFileReference; lastKnownFileType = file; path = iOS_Stretch_1.1.11.docx; sourceTree = "<group>"; };
 		73AD22F9D7CAEBC469F20921 /* Pods-DocParser.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-DocParser.release.xcconfig"; path = "Target Support Files/Pods-DocParser/Pods-DocParser.release.xcconfig"; sourceTree = "<group>"; };
 		C9DA529B1CC774E1004582F1 /* DocParser.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DocParser.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -149,6 +151,7 @@
 			children = (
 				C9DA52BF1CC77530004582F1 /* DocParser.swift */,
 				709988752DCCB9FE00649405 /* StyleParser.swift */,
+				709989182DD1A82400649405 /* ThemeManager.swift */,
 			);
 			path = DocParser;
 			sourceTree = "<group>";
@@ -327,6 +330,7 @@
 			files = (
 				C9DA52A11CC774E1004582F1 /* ViewController.swift in Sources */,
 				C9DA529F1CC774E1004582F1 /* AppDelegate.swift in Sources */,
+				709989192DD1A82400649405 /* ThemeManager.swift in Sources */,
 				709988762DCCB9FE00649405 /* StyleParser.swift in Sources */,
 				C9DA52C01CC77530004582F1 /* DocParser.swift in Sources */,
 			);

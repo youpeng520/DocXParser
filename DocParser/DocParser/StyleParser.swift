@@ -52,6 +52,22 @@ class StyleParser {
         static let headIndent = NSAttributedString.Key("atomic.para.headIndent")              // CGFloat (points)
         static let firstLineHeadIndent = NSAttributedString.Key("atomic.para.firstLineHeadIndent")// CGFloat (points)
         // 可以添加更多原子段落属性键，如 tailIndent, tabStops 等
+        
+        static let themeColorName = NSAttributedString.Key("atomic.theme.colorName")
+        static let themeColorTint = NSAttributedString.Key("atomic.theme.colorTint")
+        static let themeColorShade = NSAttributedString.Key("atomic.theme.colorShade")
+        // 对于背景/底纹
+        static let themeFillName = NSAttributedString.Key("atomic.theme.fillName")
+        static let themeFillTint = NSAttributedString.Key("atomic.theme.fillTint")
+        static let themeFillShade = NSAttributedString.Key("atomic.theme.fillShade")
+        
+        // << 新增/确认段落底纹原子键 >>
+          static let paraBackgroundColorHex = NSAttributedString.Key("atomic.para.bgColorHex")
+          static let paraBackgroundThemeColorName = NSAttributedString.Key("atomic.para.bgThemeColorName")
+          static let paraBackgroundThemeColorTint = NSAttributedString.Key("atomic.para.bgThemeColorTint")
+          static let paraBackgroundThemeColorShade = NSAttributedString.Key("atomic.para.bgThemeColorShade")
+        
+        
     }
 
     struct StyleDefinition {
@@ -131,10 +147,32 @@ class StyleParser {
                     // else: 如果XML中没有 <w:rPrDefault>, docDefaultRunProperties 保持 init 中设置的基础字体
 
                     if docDefaultsNode["w:pPrDefault"]["w:pPr"].element != nil {
-                        let atomicParaDefaults = parseAtomicParagraphProperties(from: docDefaultsNode["w:pPrDefault"]["w:pPr"]).paragraphAtoms // 只取段落原子属性
-                        // 基于这些原子属性和“无基础 NSParagraphStyle”来构建
-                        docDefaultParagraphProperties = buildParagraphAttributes(from: atomicParaDefaults, basedOn: [:])
-                    }
+                           let pPrDefaultNode = docDefaultsNode["w:pPrDefault"]["w:pPr"]
+                           let (atomicParaDefaults, _) = parseAtomicParagraphProperties(from: pPrDefaultNode) // 获取原子段落属性
+                           
+                           // 构建文档默认段落属性（包括 NSParagraphStyle）
+                           docDefaultParagraphProperties = buildParagraphAttributes(from: atomicParaDefaults, basedOn: [:]) // 基础是空的
+
+                           // << 新增：从文档默认 pPrDefault 中提取并设置底纹 >>
+                           // buildParagraphAttributes 已经将原子底纹信息放入了 ExtendedDocxStyleAttributes 键中
+                           // 所以 docDefaultParagraphProperties 此时可能已包含这些键。
+                           // 如果你想在这里直接设置一个 .backgroundColor 到 docDefaultParagraphProperties (如果它是固定的十六进制颜色)，
+                           // 你需要额外逻辑。但通常，让 DocParser 处理更好。
+                           //
+                           // 例如，如果想让 docDefaultParagraphProperties 直接包含一个 UIColor for background:
+                           // var defaultParaBgColor: UIColor?
+                           // if let hex = atomicParaDefaults[AtomicStyleKeys.paraBackgroundColorHex] as? String, let color = UIColor(hex: hex) {
+                           //     defaultParaBgColor = color
+                           // } else if let themeName = atomicParaDefaults[AtomicStyleKeys.paraBackgroundThemeColorName] as? String {
+                           //      // 这里 StyleParser 通常不能直接访问 DocParser 的 themeManager
+                           //      // 所以最好还是传递指令
+                           // }
+                           // if let bgColor = defaultParaBgColor {
+                           //     docDefaultParagraphProperties[.backgroundColor] = bgColor // 注意：这会与运行的 .backgroundColor 冲突
+                           // }
+                           // 更好的做法是让 DocParser 从 ExtendedDocxStyleAttributes 中读取并应用。
+                           // 所以 buildParagraphAttributes 的行为是正确的，它只是传递指令。
+                       }
                     // else: 如果XML中没有 <w:pPrDefault>, docDefaultParagraphProperties 保持 init 中设置的基础 NSParagraphStyle
                 }
                 // print("StyleParser: Post-XML docDefaultRunProperties: \(docDefaultRunProperties.keys)")
@@ -352,8 +390,20 @@ class StyleParser {
         }
         if strike { atoms[AtomicStyleKeys.strikethrough] = true }
 
-        if let colorVal = runPropertyXML["w:color"].attributeValue(by: "w:val"), colorVal.lowercased() != "auto" {
-            atoms[AtomicStyleKeys.foregroundColorHex] = colorVal
+        if let colorNode = runPropertyXML["w:color"].element {
+            if let hexVal = colorNode.attribute(by: "w:val")?.text, hexVal.lowercased() != "auto" {
+                atoms[AtomicStyleKeys.foregroundColorHex] = hexVal // 存储直接的十六进制
+            }
+            if let themeColor = colorNode.attribute(by: "w:themeColor")?.text {
+                atoms[AtomicStyleKeys.themeColorName] = themeColor // 存储主题颜色名称
+                if let tint = colorNode.attribute(by: "w:themeTint")?.text {
+                    atoms[AtomicStyleKeys.themeColorTint] = tint
+                }
+                if let shade = colorNode.attribute(by: "w:themeShade")?.text {
+                    atoms[AtomicStyleKeys.themeColorShade] = shade
+                }
+            }
+            // "auto" 通常意味着不在此级别定义，而是继承或使用默认，所以不特别存 "auto"
         }
         
          if let highlightVal = runPropertyXML["w:highlight"].attributeValue(by: "w:val"), highlightVal.lowercased() != "none" {
@@ -442,6 +492,25 @@ class StyleParser {
              }
              // w:lineSpacing 也可以在这里解析，如果需要的话
         }
+        
+        // << 新增：解析段落底纹 <w:shd> >>
+           let shdNode = paraPropertyXML["w:shd"]
+           if shdNode.element != nil {
+               if let fillHex = shdNode.attributeValue(by: "w:fill"), fillHex.lowercased() != "auto" {
+                   pAtoms[AtomicStyleKeys.paraBackgroundColorHex] = fillHex
+               }
+               if let themeFill = shdNode.attributeValue(by: "w:themeFill") {
+                   pAtoms[AtomicStyleKeys.paraBackgroundThemeColorName] = themeFill
+                   if let tint = shdNode.attributeValue(by: "w:themeFillTint") {
+                       pAtoms[AtomicStyleKeys.paraBackgroundThemeColorTint] = tint
+                   }
+                   if let shade = shdNode.attributeValue(by: "w:themeFillShade") {
+                       pAtoms[AtomicStyleKeys.paraBackgroundThemeColorShade] = shade
+                   }
+               }
+               // 注意：w:val (预定义颜色名称) 在 <w:shd> 中也可能出现，但这里优先处理 fill 和 themeFill
+           }
+           // << 段落底纹解析结束 >>
 
         var rAtomsFromPPr: Attributes = [:]
         if paraPropertyXML["w:rPr"].element != nil {
@@ -510,11 +579,38 @@ class StyleParser {
         }
 
         // 应用颜色
-        if let hexAtom = atoms[AtomicStyleKeys.foregroundColorHex] as? String, let color = UIColor(hex: hexAtom) {
-            finalAttrs[.foregroundColor] = color
-        } else if atoms[AtomicStyleKeys.foregroundColorHex] != nil && finalAttrs[.foregroundColor] == nil {
-            // 如果原子属性中有颜色但解析失败，且基础属性中无颜色，则不设置或使用文档默认（此处不设）
-        }
+        // 1. 如果原子属性中有直接的十六进制颜色，它优先
+          if let hexAtom = atoms[AtomicStyleKeys.foregroundColorHex] as? String {
+              if let color = UIColor(hex: hexAtom) { // StyleParser 可以尝试解析 hex
+                  finalAttrs[.foregroundColor] = color
+                  // 清除可能从 base 继承的主题颜色指令，因为 hex 优先
+                  finalAttrs.removeValue(forKey: ExtendedDocxStyleAttributes.themeColorName)
+                  finalAttrs.removeValue(forKey: ExtendedDocxStyleAttributes.themeColorTint)
+                  finalAttrs.removeValue(forKey: ExtendedDocxStyleAttributes.themeColorShade)
+              }
+          }
+          // 2. 如果原子属性中有主题颜色指令，传递它们 (会覆盖 base 中的同类指令)
+          //    这些会通过 ExtendedDocxStyleAttributes 键传递给 DocParser
+          else if let themeNameAtom = atoms[AtomicStyleKeys.themeColorName] as? String {
+              finalAttrs[ExtendedDocxStyleAttributes.themeColorName] = themeNameAtom
+              if let tintAtom = atoms[AtomicStyleKeys.themeColorTint] as? String {
+                  finalAttrs[ExtendedDocxStyleAttributes.themeColorTint] = tintAtom
+              } else {
+                  finalAttrs.removeValue(forKey: ExtendedDocxStyleAttributes.themeColorTint) // 清除 base 中的
+              }
+              if let shadeAtom = atoms[AtomicStyleKeys.themeColorShade] as? String {
+                  finalAttrs[ExtendedDocxStyleAttributes.themeColorShade] = shadeAtom
+              } else {
+                  finalAttrs.removeValue(forKey: ExtendedDocxStyleAttributes.themeColorShade) // 清除 base 中的
+              }
+              // 清除可能从 base 继承的直接 .foregroundColor 和 .foregroundColorHex，因为主题指令优先于继承的 hex
+              if base[AtomicStyleKeys.themeColorName] == nil { // 仅当 base 中没有主题颜色时才清除
+                   finalAttrs.removeValue(forKey: .foregroundColor)
+                   finalAttrs.removeValue(forKey: ExtendedDocxStyleAttributes.foregroundColorHex)
+              }
+          }
+          // 如果 atoms 中既没有 hex 也没有 theme，则 finalAttrs 会保留 base 中的颜色信息（可能是已解析的 .foregroundColor 或其他主题指令）
+        
 
         // 应用下划线
         if let underlineAtom = atoms[AtomicStyleKeys.underline] as? String {
@@ -605,6 +701,35 @@ class StyleParser {
         if let finalPStyle = pStyleToModify {
             finalAttrs[.paragraphStyle] = finalPStyle.copy()
         }
+        
+        // << 新增：传递段落底纹颜色指令 >>
+           // 优先级：直接十六进制 > 主题颜色指令
+           if let hexAtom = atoms[AtomicStyleKeys.paraBackgroundColorHex] as? String {
+               finalAttrs[ExtendedDocxStyleAttributes.paragraphBackgroundColorHex] = hexAtom
+               // 清除可能从 base 继承的主题底纹指令
+               finalAttrs.removeValue(forKey: ExtendedDocxStyleAttributes.paragraphBackgroundThemeColorName)
+               finalAttrs.removeValue(forKey: ExtendedDocxStyleAttributes.paragraphBackgroundThemeColorTint)
+               finalAttrs.removeValue(forKey: ExtendedDocxStyleAttributes.paragraphBackgroundThemeColorShade)
+           } else if let themeNameAtom = atoms[AtomicStyleKeys.paraBackgroundThemeColorName] as? String {
+               finalAttrs[ExtendedDocxStyleAttributes.paragraphBackgroundThemeColorName] = themeNameAtom
+               if let tintAtom = atoms[AtomicStyleKeys.paraBackgroundThemeColorTint] as? String {
+                   finalAttrs[ExtendedDocxStyleAttributes.paragraphBackgroundThemeColorTint] = tintAtom
+               } else {
+                   finalAttrs.removeValue(forKey: ExtendedDocxStyleAttributes.paragraphBackgroundThemeColorTint)
+               }
+               if let shadeAtom = atoms[AtomicStyleKeys.paraBackgroundThemeColorShade] as? String {
+                   finalAttrs[ExtendedDocxStyleAttributes.paragraphBackgroundThemeColorShade] = shadeAtom
+               } else {
+                   finalAttrs.removeValue(forKey: ExtendedDocxStyleAttributes.paragraphBackgroundThemeColorShade)
+               }
+               // 清除可能从 base 继承的直接十六进制底纹指令
+                if base[AtomicStyleKeys.paraBackgroundThemeColorName] == nil { // 仅当 base 中没有主题底纹时才清除
+                   finalAttrs.removeValue(forKey: ExtendedDocxStyleAttributes.paragraphBackgroundColorHex)
+                }
+           }
+           // 如果 atoms 中既没有 hex 也没有 theme，则 finalAttrs 会保留 base 中的底纹颜色信息
+           // << 段落底纹指令传递结束 >>
+        
         return finalAttrs
     }
     
@@ -635,4 +760,20 @@ struct ExtendedDocxStyleAttributes {
     static let verticalAlignment = NSAttributedString.Key("com.docparser.style.verticalAlignment") // 存储 "superscript", "subscript", "baseline"
     static let underline = NSAttributedString.Key("com.docparser.style.underline") // 存储 "single", "double", "none" 等
     static let strikethrough = NSAttributedString.Key("com.docparser.style.strikethrough") // 存储 Bool
+    
+    // << 新增的主题颜色相关键 >>
+    static let themeColorName = NSAttributedString.Key("com.docparser.style.theme.colorName")     // String (例如 "accent1")
+    static let themeColorTint = NSAttributedString.Key("com.docparser.style.theme.colorTint")     // String (例如 "BF" 或 "75000")
+    static let themeColorShade = NSAttributedString.Key("com.docparser.style.theme.colorShade")   // String (例如 "BF" 或 "75000")
+
+    // 如果样式中也定义了主题背景/底纹颜色，也可以添加类似的键
+    // static let themeFillName = NSAttributedString.Key("com.docparser.style.theme.fillName")
+    // static let themeFillTint = NSAttributedString.Key("com.docparser.style.theme.fillTint")
+    // static let themeFillShade = NSAttributedString.Key("com.docparser.style.theme.fillShade")
+    
+    // << 新增/确认段落底纹传递键 >>
+       static let paragraphBackgroundColorHex = NSAttributedString.Key("com.docparser.style.para.bgColorHex")
+       static let paragraphBackgroundThemeColorName = NSAttributedString.Key("com.docparser.style.para.bgThemeColorName")
+       static let paragraphBackgroundThemeColorTint = NSAttributedString.Key("com.docparser.style.para.bgThemeColorTint")
+       static let paragraphBackgroundThemeColorShade = NSAttributedString.Key("com.docparser.style.para.bgThemeColorShade")
 }
