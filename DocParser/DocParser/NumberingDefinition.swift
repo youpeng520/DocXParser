@@ -21,8 +21,7 @@ struct NumberingLevelDefinition {
     var levelTextFormat: String                 // 级别文本格式模板, 例如 <w:lvlText w:val="%1.">
     var levelSuffix: String = "tab"             // 列表项编号后的后缀, 例如 <w:suff w:val="tab|space|nothing"> (默认为制表符)
     var wasStandardizedFromSymbolFont: Bool = false
-    var requiresSymbolFont: Bool = false
-    var originalSymbolFontName: String? = nil 
+
 
     // 从 <w:lvl><w:pPr> 解析的段落原子属性 (用于修改列表项段落样式)
     var paragraphPropertiesAtoms: [NSAttributedString.Key: Any] = [:]
