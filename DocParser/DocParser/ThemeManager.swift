@@ -5,7 +5,9 @@
 //  Created by ZJS on 2025/5/12.
 //  Copyright © 2025 paf. All rights reserved.
 //
-
+/*
+ 主题支持类
+ */
 import Foundation
 import UIKit
 import SWXMLHash

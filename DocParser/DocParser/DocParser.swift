@@ -48,7 +48,8 @@ class DocParser {
     private var mediaBaseURL: URL?                    // 解压后 'word' 目录的URL，用于构建媒体文件的完整路径
     private let styleParser = StyleParser()           // << 集成的样式解析器实例 >>
     private var themeManager: ThemeManager?           // << 新增ThemeManager实例 >>
-    
+    private let numberingParser = NumberingDefinitionParser() // << 新增 numberingParser 实例 >>
+    private var listInstanceCounters: [String: [Int: Int]] = [:]     // 这个字典将用于跟踪每个列表实例在不同级别的当前编号。
     // MARK: - Public Interface (公共接口)
     /**
      * 解析指定的 DOCX 文件URL，返回一个 NSAttributedString。
@@ -99,6 +100,21 @@ class DocParser {
         let stylesURL = unzipDirectory.appendingPathComponent("word/styles.xml")
         // StyleParser 内部会处理文件未找到的情况，允许程序继续执行但没有文档样式
         try styleParser.parseStyles(stylesFileURL: stylesURL)
+        
+        // << 新增: 解析 numbering.xml >>
+           let numberingURL = unzipDirectory.appendingPathComponent("word/numbering.xml")
+           if FileManager.default.fileExists(atPath: numberingURL.path) {
+               do {
+                   // **将 StyleParser实例传递给 numberingParser**
+                   try numberingParser.parseNumberingDefinitions(numberingFileURL: numberingURL, styleParser: self.styleParser)
+                   // print("DocParser: numbering.xml 解析成功。")
+               } catch {
+                   print("DocParser: 解析 numbering.xml 失败: \(error)。列表可能无法正确显示。")
+                   // 可以选择抛出错误或允许继续
+               }
+           } else {
+               print("DocParser: numbering.xml 未找到。无列表定义。")
+           }
         
         // 3. 解析主文档 (word/document.xml)
         // 这是包含实际文本内容和结构的核心XML文件。
@@ -176,39 +192,181 @@ class DocParser {
         // 1. 解析段落属性 (<w:pPr>)，考虑样式继承和直接定义，获取最终生效的段落属性和段内默认运行属性
         //    `effectiveParagraphAttrs` 包含最终的 NSParagraphStyle
         //    `defaultRunAttrsForPara` 是此段落内文本运行的默认起始属性
-        let (effectiveParagraphAttrs, defaultRunAttrsForPara) =
+        var (effectiveParagraphAttrs, defaultRunAttrsForPara) =
         try parseParagraphProperties(fromPPrNode: paragraphXML["w:pPr"])
         
-        // 2. 处理列表项前缀 (如果 <w:numPr> 存在)
-        var listItemPrefix = "" // 初始化列表项前缀为空字符串
-        let numPrIndexer = paragraphXML["w:pPr"]["w:numPr"] // 获取段落属性中的数字编号属性 <w:numPr>
+        // 标记是否成功应用了列表特定格式
+           var listFormattingApplied = false
         
-        // 检查 <w:numPr> 是否存在。如果存在，表示这可能是一个列表项。
-        if numPrIndexer.element != nil {
-            // 获取列表级别 <w:ilvl w:val="0">。默认为0级。
-            let level = numPrIndexer["w:ilvl"].attributeValue(by: "w:val").flatMap { Int($0) } ?? 0
-            
-            // TODO: 完整的列表格式化需要解析 numbering.xml 文件以获取真实的编号/项目符号。
-            //       目前下面的代码是基于占位符的简化处理。
-            
-            // 根据列表级别计算缩进字符串。示例：每级缩进4个空格。
-            let indent = String(repeating: "    ", count: level)
-            
-            // 如果未来实现了 numbering.xml 的解析，这里的逻辑需要更新，
-            // 以便使用从 numbering.xml 中获取的实际列表标记来替换或增强此处的 indent。
-            listItemPrefix = indent // 仅保留缩进
-            
-            // 如果 listItemPrefix (即缩进字符串) 不为空，则将其添加到段落富文本中。
-            if !listItemPrefix.isEmpty {
-                // 列表项前缀（现在通常只有缩进）使用段落的默认运行属性
-                var prefixActualAttrs = defaultRunAttrsForPara
-                if prefixActualAttrs[.font] == nil { // 确保字体属性存在 (以防万一默认属性中没有字体)
-                    prefixActualAttrs[.font] = UIFont(name: DocxConstants.defaultFontName, size: DocxConstants.defaultFontSize)
+        // 2. 处理列表项前缀 (如果 <w:numPr> 存在)
+        let numPrNode = paragraphXML["w:pPr"]["w:numPr"]
+        if numPrNode.element != nil {
+            // numId 标识当前列表项使用的编号样式。
+            // ilvl​​：表示当前列表项的嵌套层级或缩进级别
+            if let numId = numPrNode["w:numId"].attributeValue(by: "w:val"),
+               let ilvlStr = numPrNode["w:ilvl"].attributeValue(by: "w:val"),
+               let levelIndex = Int(ilvlStr) {
+                
+                // 获取此 numId 对应的具体列表定义
+                // 我们需要从 numberingParser 获取解析好的定义
+                // 尝试获取此 numId 和 levelIndex 对应的具体列表定义
+                if let concreteNumDef = self.numberingParser.getConcreteNumberingDefinitions()[numId],
+                   let currentLevelDef = concreteNumDef.levels[levelIndex]
+                {
+                    // --- 列表定义成功找到，开始格式化列表项 ---
+                    listFormattingApplied = true // 标记成功找到并应用格式
+                    
+                    // 获取或初始化此列表实例 (numId) 的计数器状态
+                    var countersForThisNumId = self.listInstanceCounters[numId] ?? [:]
+                    
+                    // 更新当前级别的计数器
+                    var currentCountForLevel: Int
+                    if let lastCount = countersForThisNumId[levelIndex] {
+                        // TODO: 实现更复杂的列表重启逻辑 (基于 <w:lvl w:restart="1"> 等)
+                        currentCountForLevel = lastCount + 1
+                    } else {
+                        currentCountForLevel = currentLevelDef.startValue  // 首次遇到此级别，使用起始值
+                    }
+                    countersForThisNumId[levelIndex] = currentCountForLevel
+                    
+                    
+                    // 当一个较高级别项出现时，重置所有更低级别的计数器为其定义中的 startValue
+                    let lowerBoundForReset = levelIndex + 1
+                    let upperBoundForResetMaxKey = concreteNumDef.levels.keys.max() // 获取定义中的最大级别索引
+                    
+                    // 确定重置范围的上限。我们只关心那些实际定义了的、且比当前级别低的级别。
+                    // upperBoundForResetMaxKey 可能是 nil (如果 levels 为空，理论上不应发生在此处)
+                    // 或它可能小于 levelIndex (如果 levels 中只有少数几个不连续的低级别定义，这也不太可能)
+                    // 我们真正想遍历的是从 levelIndex + 1 到定义的最高级别。
+                    
+                    if let maxDefinedLevel = upperBoundForResetMaxKey {
+                        if lowerBoundForReset <= maxDefinedLevel { // 只有当下限小于等于上限时，范围才有效
+                            for i in lowerBoundForReset...maxDefinedLevel { // 使用闭区间 ... 来包含 maxDefinedLevel
+                                // 我们只重置比当前 levelIndex 更高的级别（即索引更大的级别）
+                                // 但是，"更低级别" 在 Word 的概念里通常是指子级别，这些子级别的索引 *大于* 父级别索引。
+                                // 例如：级别0 (父)，级别1 (子)，级别2 (孙子)
+                                // 所以，如果当前是 levelIndex，我们要重置的是 levelIndex + 1, levelIndex + 2, ...
+                                
+                                if i > levelIndex { // 确保我们只操作比当前级别更“深”的级别
+                                    if let lowerLevelDef = concreteNumDef.levels[i] {
+                                        countersForThisNumId[i] = lowerLevelDef.startValue
+                                        // print("DEBUG: Resetting counter for numId \(numId), level \(i) to \(lowerLevelDef.startValue) because higher level \(levelIndex) appeared.")
+                                    } else {
+                                        // 如果这个更深的级别没有定义（例如，列表只有0、1两级，当前是0，我们不应该尝试重置未定义的级别2的计数器）
+                                        // 但如果它之前因为某些原因有了计数器，可以移除
+                                        countersForThisNumId.removeValue(forKey: i)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    self.listInstanceCounters[numId] = countersForThisNumId  // 保存更新后的计数器状态
+                    
+                    // 生成列表项前缀字符串 (例如 "1.", "a)", "•")
+                    let prefixText = self.numberingParser.formatLevelText(
+                        currentLevelDef.levelTextFormat,
+                        currentValue: currentCountForLevel,
+                        numberFormat: currentLevelDef.numberFormat,
+                        numId: numId,
+                        allLevelsCounters: countersForThisNumId,
+                        allLevelDefinitions: concreteNumDef.levels
+                    )
+                    
+                    var suffixText = ""
+                    switch currentLevelDef.levelSuffix {
+                    case "tab": suffixText = "\t"
+                    case "space": suffixText = " "
+                    default: break  // "nothing" 或其他
+                    }
+                    
+                    let fullListItemPrefix = prefixText + suffixText
+                    
+                    if !fullListItemPrefix.isEmpty {
+                        // 获取列表符号的运行属性 (来自 <w:lvl><w:rPr>)
+                        let listSymbolRunAtoms = currentLevelDef.runPropertiesAtoms
+                        
+                        // 基于段落的默认运行属性，并应用列表符号的特定原子运行属性来构建最终的符号样式
+                        // 调用 StyleParser 的 buildRunAttributes (假设访问级别已调整，无 _public 后缀)**
+                        var finalSymbolRunAttributes = self.styleParser.buildRunAttributes(
+                            from: listSymbolRunAtoms,  // 原子属性来自列表符号定义
+                            basedOn: defaultRunAttrsForPara  // 基础属性来自段落
+                        )
+                        
+                        // **1: 处理已标准化的符号字体**
+                        // 如果列表符号是从 Symbol 或 Wingdings 字体标准化而来的 (例如 'o' -> '•')，
+                        // 我们应该确保它使用一个常规字体显示，而不是强制应用 Symbol/Wingdings 字体，
+                        // 除非 listSymbolRunAtoms 中明确指定了其他字体。
+                        if currentLevelDef.wasStandardizedFromSymbolFont {
+                            // 检查 finalSymbolRunAttributes 中的字体是否仍然是 Symbol/Wingdings
+                            // 如果是，并且我们希望用常规字体显示标准化的Unicode符号，则替换它。
+                            if let symbolFont = finalSymbolRunAttributes[.font] as? UIFont {
+                                let fontNameLower = symbolFont.fontName.lowercased()
+                                if fontNameLower.contains("symbol")
+                                    || fontNameLower.contains("wingdings")
+                                {
+                                    // 使用段落的默认字体（defaultRunAttrsForPara 中的字体），或一个全局默认字体
+                                    var fallbackFont = defaultRunAttrsForPara[.font] as? UIFont
+                                    if fallbackFont == nil
+                                        || fallbackFont!.fontName.lowercased().contains("symbol")
+                                        || fallbackFont!.fontName.lowercased().contains("wingdings")
+                                    {
+                                        // 如果段落默认字体也是Symbol/Wingdings或不存在，则使用一个安全的全局默认字体
+                                        fallbackFont =
+                                        UIFont(
+                                            name: DocxConstants.defaultFontName,
+                                            size: symbolFont.pointSize)
+                                        ?? UIFont.systemFont(ofSize: symbolFont.pointSize)
+                                    }
+                                    // 确保新字体的大小与原来的符号字体大小一致 (或者用段落默认字体大小)
+                                    if let validFallbackFont = fallbackFont {
+                                        finalSymbolRunAttributes[.font] = validFallbackFont.withSize(
+                                            symbolFont.pointSize)  // 保留原符号大小
+                                    }
+                                }
+                            }
+                        }
+                        
+                        paragraphAttributedString.append(
+                            NSAttributedString(
+                                string: fullListItemPrefix, attributes: finalSymbolRunAttributes))
+                    }
+                    
+                    // 合并列表级别定义的段落属性 (主要是缩进和制表位) 到 effectiveParagraphAttrs
+                    // 应用列表级别定义的段落属性 (缩进、制表位等)
+                    // 这些属性来自 <w:lvl><w:pPr>并已存储在 currentLevelDef.paragraphPropertiesAtoms 中
+                    if !currentLevelDef.paragraphPropertiesAtoms.isEmpty {
+                        // 直接将 styleParser.buildParagraphAttributes 的结果赋给 effectiveParagraphAttrs                        // 因为 buildParagraphAttributes 内部已经处理了基于 'effectiveParagraphAttrs' 并应用 'currentLevelDef.paragraphPropertiesAtoms' 的逻辑
+                        effectiveParagraphAttrs = self.styleParser.buildParagraphAttributes(
+                                              from: currentLevelDef.paragraphPropertiesAtoms, // 列表级别的原子属性
+                                              basedOn: effectiveParagraphAttrs               // 当前段落的基础属性
+                                          )
+                                            
+                        
+                        // 现在 effectiveParagraphAttrs 中应该包含了正确的 NSParagraphStyle (带有正确的缩进和制表位)
+                    }
+                }else {  // **列表定义未找到的 else 块**
+                    print(
+                        "DocParser processParagraph: 警告 - 列表定义 (numId: \(numId), level: \(levelIndex)) 未找到。此段落将不应用列表特定格式，但会尝试添加默认缩进。"
+                    )
+                    // 作为回退，可以添加一些基于级别的简单缩进
+                    let fallbackIndent = String(repeating: "    ", count: levelIndex)  // 每级4个空格
+                    if !fallbackIndent.isEmpty {
+                        // 使用段落的默认运行属性来应用这个占位符缩进
+                        var indentAttrs = defaultRunAttrsForPara
+                        if indentAttrs[.font] == nil {  // 确保有字体，以防万一
+                            indentAttrs[.font] =
+                            UIFont(
+                                name: DocxConstants.defaultFontName,
+                                size: DocxConstants.defaultFontSize)
+                            ?? UIFont.systemFont(ofSize: DocxConstants.defaultFontSize)
+                        }
+                        paragraphAttributedString.append(
+                            NSAttributedString(string: fallbackIndent, attributes: indentAttrs))
+                    }
+                    // 此处不 return 或 throw，代码将自然流出此 else 块，继续处理段落的文本内容
                 }
-                paragraphAttributedString.append(NSAttributedString(string: listItemPrefix, attributes: prefixActualAttrs))
-            }
-        }
-        // --- 修改结束 ---
+            } // 结束 if numPrNode.element != nil
+        } // --- 列表项处理结束 ---
         
         // 3. 遍历段落内的子元素（文本运行 <w:r>、超链接 <w:hyperlink>、图片等）
         for node in paragraphXML.children {
@@ -235,12 +393,13 @@ class DocParser {
                     }
                 }
             } else if node.element?.name == "w:tab" { // 显式制表符 <w:tab/>
+                // 这里的制表符是内容中的，而不是列表项后缀的。它将使用 defaultRunAttrsForPara。
                 appendedString = NSAttributedString(string: "\t", attributes: defaultRunAttrsForPara)
             } else if node.element?.name == "w:br" { // 段内换行符 <w:br/>
                 // TODO: 可检查 <w:br w:type="page"/> 实现分页符处理
                 appendedString = NSAttributedString(string: "\n", attributes: defaultRunAttrsForPara)
             } else if node.element?.name == "w:smartTag" || node.element?.name == "w:proofErr" { // 智能标签或校对错误标记 (通常包含实际文本)
-                // 遍历这些标签内的子元素 (通常是 <w:r>)
+                // 遍历标签内的子元素 (通常是 <w:r>)
                 let tempString = NSMutableAttributedString()
                 for child in node.children {
                     if child.element?.name == "w:r" {
@@ -263,7 +422,7 @@ class DocParser {
         if paragraphAttributedString.length > 0 {
             paragraphAttributedString.addAttributes(effectiveParagraphAttrs, range: NSRange(location: 0, length: paragraphAttributedString.length))
         }
-        //        print("  String content: [\(paragraphAttributedString.string)]")
+        print("  String content: [\(paragraphAttributedString.string)]----\(effectiveParagraphAttrs)")
         return paragraphAttributedString
     }
     // MARK: - Paragraph Property Parsing (Revised for Styles) (段落属性解析 - 已为样式修改)

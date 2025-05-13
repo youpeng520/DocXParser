@@ -4,7 +4,10 @@
 //
 //  Created by ZJS on 2025/5/8.
 //  Copyright © 2025 paf. All rights reserved.
-//
+/*
+ 样式解析类
+ 
+ */
 
 import Foundation
 import SWXMLHash
@@ -52,6 +55,8 @@ class StyleParser {
         static let headIndent = NSAttributedString.Key("atomic.para.headIndent")              // CGFloat (points)
         static let firstLineHeadIndent = NSAttributedString.Key("atomic.para.firstLineHeadIndent")// CGFloat (points)
         // 可以添加更多原子段落属性键，如 tailIndent, tabStops 等
+        // << 新增：用于存储解析出的制表位数据的原子键 >>
+            static let tabStopsData = NSAttributedString.Key("atomic.para.tabStopsData") // 值类型: [(type: String, positionInPoints: CGFloat)]
         
         static let themeColorName = NSAttributedString.Key("atomic.theme.colorName")
         static let themeColorTint = NSAttributedString.Key("atomic.theme.colorTint")
@@ -347,7 +352,7 @@ class StyleParser {
     // MARK: - Atomic Property Parsing and Building
     
     // 从 <w:rPr> 解析原子运行属性
-    private func parseAtomicRunProperties(from runPropertyXML: XMLNode) -> Attributes {
+    func parseAtomicRunProperties(from runPropertyXML: XMLNode) -> Attributes {
         var atoms: Attributes = [:]
 
         if let szStr = runPropertyXML["w:sz"].attributeValue(by: "w:val") ?? runPropertyXML["w:szCs"].attributeValue(by: "w:val"),
@@ -417,111 +422,149 @@ class StyleParser {
     }
     
     // 从 <w:pPr> 解析原子段落属性 (用于构建 NSParagraphStyle) 和其内部 <w:rPr> 的原子运行属性
-    private func parseAtomicParagraphProperties(from paraPropertyXML: XMLNode) -> (paragraphAtoms: Attributes, runAtomsFromPPr: Attributes) {
-        var pAtoms: Attributes = [:]
+    func parseAtomicParagraphProperties(from paraPropertyXML: XMLNode) -> (paragraphAtoms: Attributes, runAtomsFromPPr: Attributes) {
+       var pAtoms: Attributes = [:]
 
-        if let alignVal = paraPropertyXML["w:jc"].attributeValue(by: "w:val") {
-            var alignmentValue: Int?
-            switch alignVal.lowercased() {
-            case "left", "start": alignmentValue = NSTextAlignment.left.rawValue
-            case "right", "end": alignmentValue = NSTextAlignment.right.rawValue
-            case "center": alignmentValue = NSTextAlignment.center.rawValue
-            case "both", "distribute", "justify": alignmentValue = NSTextAlignment.justified.rawValue
-            default: break
-            }
-            if let alignRaw = alignmentValue { pAtoms[AtomicStyleKeys.alignment] = alignRaw }
-        }
-
-        let twipsPerPoint: CGFloat = 20.0
-        let indNode = paraPropertyXML["w:ind"]
-        if indNode.element != nil {
-            var baseHeadIndentPts: CGFloat?
-            if let leftValStr = indNode.attributeValue(by: "w:left") ?? indNode.attributeValue(by: "w:start"),
-               let val = Double(leftValStr) {
-                baseHeadIndentPts = CGFloat(val) / twipsPerPoint
-                pAtoms[AtomicStyleKeys.headIndent] = baseHeadIndentPts
-            }
-
-            var firstLineIndentPts: CGFloat?
-            if let firstLineValStr = indNode.attributeValue(by: "w:firstLine"), let val = Double(firstLineValStr) {
-                 firstLineIndentPts = CGFloat(val) / twipsPerPoint
-            } else if let hangingValStr = indNode.attributeValue(by: "w:hanging"), let val = Double(hangingValStr)  {
-                 let hangingAmountPts = CGFloat(val) / twipsPerPoint
-                 firstLineIndentPts = baseHeadIndentPts ?? 0
-                 // 对于悬挂，实际的 headIndent (非首行) 是 base + hanging
-                 pAtoms[AtomicStyleKeys.headIndent] = (baseHeadIndentPts ?? 0) + hangingAmountPts
-            }
-            if let flIndent = firstLineIndentPts {
-                pAtoms[AtomicStyleKeys.firstLineHeadIndent] = flIndent
-            } else if baseHeadIndentPts != nil { // 如果有 headIndent 但没有 firstLine/hanging
-                pAtoms[AtomicStyleKeys.firstLineHeadIndent] = baseHeadIndentPts
-            }
-        }
-        
-        if let spacingNode = paraPropertyXML["w:spacing"].element {
-            if let beforeStr = spacingNode.attribute(by: "w:before")?.text, let val = Double(beforeStr) {
-                pAtoms[AtomicStyleKeys.paragraphSpacingBefore] = CGFloat(val) / twipsPerPoint
-            }
-            if let afterStr = spacingNode.attribute(by: "w:after")?.text, let val = Double(afterStr) {
-                pAtoms[AtomicStyleKeys.paragraphSpacingAfter] = CGFloat(val) / twipsPerPoint
-            }
-            
-            if let lineValStr = spacingNode.attribute(by: "w:line")?.text, let lineVal = Double(lineValStr) {
-                 let lineRule = spacingNode.attribute(by: "w:lineRule")?.text.lowercased()
-                 switch lineRule {
-                 case "auto":
-                      pAtoms[AtomicStyleKeys.lineHeightMultiple] = CGFloat(lineVal) / 240.0
-                      pAtoms[AtomicStyleKeys.minimumLineHeight] = 0.0
-                      pAtoms[AtomicStyleKeys.maximumLineHeight] = 0.0
-                 case "exact":
-                      let exactHeight = CGFloat(lineVal) / twipsPerPoint
-                      pAtoms[AtomicStyleKeys.minimumLineHeight] = exactHeight
-                      pAtoms[AtomicStyleKeys.maximumLineHeight] = exactHeight
-                      pAtoms[AtomicStyleKeys.lineHeightMultiple] = 0.0
-                 case "atleast":
-                      pAtoms[AtomicStyleKeys.minimumLineHeight] = CGFloat(lineVal) / twipsPerPoint
-                      pAtoms[AtomicStyleKeys.maximumLineHeight] = 0.0
-                      pAtoms[AtomicStyleKeys.lineHeightMultiple] = 0.0
-                 default:
-                      if lineRule == nil || lineRule == "multiple" {
-                          pAtoms[AtomicStyleKeys.lineHeightMultiple] = CGFloat(lineVal) / 240.0
-                          pAtoms[AtomicStyleKeys.minimumLineHeight] = 0.0
-                          pAtoms[AtomicStyleKeys.maximumLineHeight] = 0.0
-                      }
-                 }
-             }
-             // w:lineSpacing 也可以在这里解析，如果需要的话
-        }
-        
-        // << 新增：解析段落底纹 <w:shd> >>
-           let shdNode = paraPropertyXML["w:shd"]
-           if shdNode.element != nil {
-               if let fillHex = shdNode.attributeValue(by: "w:fill"), fillHex.lowercased() != "auto" {
-                   pAtoms[AtomicStyleKeys.paraBackgroundColorHex] = fillHex
-               }
-               if let themeFill = shdNode.attributeValue(by: "w:themeFill") {
-                   pAtoms[AtomicStyleKeys.paraBackgroundThemeColorName] = themeFill
-                   if let tint = shdNode.attributeValue(by: "w:themeFillTint") {
-                       pAtoms[AtomicStyleKeys.paraBackgroundThemeColorTint] = tint
-                   }
-                   if let shade = shdNode.attributeValue(by: "w:themeFillShade") {
-                       pAtoms[AtomicStyleKeys.paraBackgroundThemeColorShade] = shade
-                   }
-               }
-               // 注意：w:val (预定义颜色名称) 在 <w:shd> 中也可能出现，但这里优先处理 fill 和 themeFill
+       // --- 解析对齐 <w:jc> ---
+       if let alignVal = paraPropertyXML["w:jc"].attributeValue(by: "w:val") {
+           var alignmentValue: Int?
+           switch alignVal.lowercased() {
+           case "left", "start": alignmentValue = NSTextAlignment.left.rawValue
+           case "right", "end": alignmentValue = NSTextAlignment.right.rawValue
+           case "center": alignmentValue = NSTextAlignment.center.rawValue
+           case "both", "distribute", "justify": alignmentValue = NSTextAlignment.justified.rawValue
+           default: break
            }
-           // << 段落底纹解析结束 >>
+           if let alignRaw = alignmentValue { pAtoms[AtomicStyleKeys.alignment] = alignRaw }
+       }
 
-        var rAtomsFromPPr: Attributes = [:]
-        if paraPropertyXML["w:rPr"].element != nil {
-            rAtomsFromPPr = parseAtomicRunProperties(from: paraPropertyXML["w:rPr"])
-        }
-        
-        return (pAtoms, rAtomsFromPPr)
-    }
+       // --- 解析缩进 <w:ind> ---
+       let twipsPerPoint: CGFloat = 20.0
+       let indNode = paraPropertyXML["w:ind"]
+       if indNode.element != nil {
+           var finalHeadIndentPoints: CGFloat = 0.0 // 后续行缩进 (points)
+           var finalFirstLineHeadIndentPoints: CGFloat = 0.0 // 首行缩进 (points)
+
+           // 1. 确定 Head Indent (通常由 w:left 或 w:start 决定)
+           if let leftValStr = indNode.attributeValue(by: "w:left") ?? indNode.attributeValue(by: "w:start"),
+              let leftValTwips = Double(leftValStr) {
+               finalHeadIndentPoints = CGFloat(leftValTwips) / twipsPerPoint
+           }
+           // TODO: 也应考虑 w:right 或 w:end 来计算 tailIndent (如果需要)
+
+           // 2. 根据 w:firstLine 或 w:hanging 确定 First Line Head Indent
+           if let firstLineValStr = indNode.attributeValue(by: "w:firstLine"),
+              let firstLineValTwips = Double(firstLineValStr) {
+               // 定义了 w:firstLine (绝对值)
+               finalFirstLineHeadIndentPoints = CGFloat(firstLineValTwips) / twipsPerPoint
+               // Head Indent 保持不变 (等于 left 的值)
+           } else if let hangingValStr = indNode.attributeValue(by: "w:hanging"),
+                     let hangingValTwips = Double(hangingValStr) {
+               // 定义了 w:hanging (相对 head indent 的值)
+               // Head Indent 保持不变 (等于 left 的值)
+               // First Line Head Indent = Head Indent (points) - Hanging (points)
+               finalFirstLineHeadIndentPoints = finalHeadIndentPoints - (CGFloat(hangingValTwips) / twipsPerPoint)
+           } else {
+               // 既没有 w:firstLine 也没有 w:hanging
+               // 首行缩进等于后续行缩进
+               finalFirstLineHeadIndentPoints = finalHeadIndentPoints
+           }
+           
+
+           // 3. 设置最终的原子属性值
+           pAtoms[AtomicStyleKeys.headIndent] = finalHeadIndentPoints
+           pAtoms[AtomicStyleKeys.firstLineHeadIndent] = finalFirstLineHeadIndentPoints
+           
+       } // 结束 <w:ind> 处理
+
+       // --- 解析间距 <w:spacing> ---
+       if let spacingNode = paraPropertyXML["w:spacing"].element {
+           if let beforeStr = spacingNode.attribute(by: "w:before")?.text, let val = Double(beforeStr) {
+               pAtoms[AtomicStyleKeys.paragraphSpacingBefore] = CGFloat(val) / twipsPerPoint
+           }
+           if let afterStr = spacingNode.attribute(by: "w:after")?.text, let val = Double(afterStr) {
+               pAtoms[AtomicStyleKeys.paragraphSpacingAfter] = CGFloat(val) / twipsPerPoint
+           }
+           
+           // 解析行距
+           if let lineValStr = spacingNode.attribute(by: "w:line")?.text, let lineVal = Double(lineValStr) {
+                let lineRule = spacingNode.attribute(by: "w:lineRule")?.text.lowercased()
+                switch lineRule {
+                case "auto": // 行高由字体决定，lineVal 是 240 的倍数 (例如 276 = 1.15 倍行距)
+                     pAtoms[AtomicStyleKeys.lineHeightMultiple] = CGFloat(lineVal) / 240.0
+                     pAtoms[AtomicStyleKeys.minimumLineHeight] = 0.0 // 清除 min/max
+                     pAtoms[AtomicStyleKeys.maximumLineHeight] = 0.0
+                case "exact": // 固定行高 (单位 twips)
+                     let exactHeight = CGFloat(lineVal) / twipsPerPoint
+                     pAtoms[AtomicStyleKeys.minimumLineHeight] = exactHeight
+                     pAtoms[AtomicStyleKeys.maximumLineHeight] = exactHeight
+                     pAtoms[AtomicStyleKeys.lineHeightMultiple] = 0.0 // 清除 multiple
+                case "atleast": // 最小行高 (单位 twips)
+                     pAtoms[AtomicStyleKeys.minimumLineHeight] = CGFloat(lineVal) / twipsPerPoint
+                     pAtoms[AtomicStyleKeys.maximumLineHeight] = 0.0 // 清除 max
+                     pAtoms[AtomicStyleKeys.lineHeightMultiple] = 0.0 // 清除 multiple
+                default: // 默认为 "multiple" (与 "auto" 类似)
+                     if lineRule == nil || lineRule == "multiple" {
+                         pAtoms[AtomicStyleKeys.lineHeightMultiple] = CGFloat(lineVal) / 240.0
+                         pAtoms[AtomicStyleKeys.minimumLineHeight] = 0.0
+                         pAtoms[AtomicStyleKeys.maximumLineHeight] = 0.0
+                     }
+                }
+            }
+           // 也可以解析 <w:lineSpacing> (添加额外的固定间距，不常用)
+       }
+
+       // --- 解析制表位 <w:tabs> ---
+       let tabsNode = paraPropertyXML["w:tabs"]
+       if tabsNode.element != nil {
+           var parsedTabStops: [(type: String, positionInPoints: CGFloat)] = []
+           for tabNode in tabsNode["w:tab"].all {
+               if let type = tabNode.attributeValue(by: "w:val"), // e.g., "left", "clear", "right"
+                  let posStr = tabNode.attributeValue(by: "w:pos"),
+                  let posTwips = Double(posStr) {
+                   // 如果是 "clear"，它表示清除指定位置之前的所有默认制表位，我们可能需要在构建 NSTextTab 时处理
+                   // 这里我们先记录所有非 "clear" 的制表位
+                   if type.lowercased() != "clear" {
+                       parsedTabStops.append((type: type, positionInPoints: CGFloat(posTwips) / twipsPerPoint))
+                   }
+                   // TODO: 记录 clear tab 的位置，以便在 buildParagraphAttributes 中应用其效果
+               }
+           }
+           if !parsedTabStops.isEmpty {
+                // 按位置排序，这对于 NSParagraphStyle 很重要
+                parsedTabStops.sort { $0.positionInPoints < $1.positionInPoints }
+                pAtoms[AtomicStyleKeys.tabStopsData] = parsedTabStops
+           }
+       }
+       
+       // --- 解析段落底纹 <w:shd> ---
+       let shdNode = paraPropertyXML["w:shd"]
+       if shdNode.element != nil {
+           if let fillHex = shdNode.attributeValue(by: "w:fill"), fillHex.lowercased() != "auto" {
+               pAtoms[AtomicStyleKeys.paraBackgroundColorHex] = fillHex
+           }
+           if let themeFill = shdNode.attributeValue(by: "w:themeFill") {
+               pAtoms[AtomicStyleKeys.paraBackgroundThemeColorName] = themeFill
+               if let tint = shdNode.attributeValue(by: "w:themeFillTint") {
+                   pAtoms[AtomicStyleKeys.paraBackgroundThemeColorTint] = tint
+               }
+               if let shade = shdNode.attributeValue(by: "w:themeFillShade") {
+                   pAtoms[AtomicStyleKeys.paraBackgroundThemeColorShade] = shade
+               }
+           }
+       }
+
+       // --- 解析 <w:pPr> 内嵌的 <w:rPr> (影响段内默认运行属性) ---
+       var rAtomsFromPPr: Attributes = [:]
+       if paraPropertyXML["w:rPr"].element != nil {
+           rAtomsFromPPr = parseAtomicRunProperties(from: paraPropertyXML["w:rPr"])
+       }
+       
+       return (pAtoms, rAtomsFromPPr)
+   }
 
     // 构建完整的运行属性 (如UIFont, UIColor) 从原子属性和基础属性
-    private func buildRunAttributes(from atoms: Attributes, basedOn base: Attributes) -> Attributes {
+    func buildRunAttributes(from atoms: Attributes, basedOn base: Attributes) -> Attributes {
         var finalAttrs = base // 从基础属性开始 (可能已包含 .font, .foregroundColor 等)
 
         // 获取基础字体信息
@@ -644,19 +687,19 @@ class StyleParser {
     }
 
     // 构建完整的段落属性 (NSParagraphStyle) 从原子属性和基础属性
-    private func buildParagraphAttributes(from atoms: Attributes, basedOn base: Attributes) -> Attributes {
-        var finalAttrs = base // 通常 base 包含一个 .paragraphStyle
+    func buildParagraphAttributes(from atoms: Attributes, basedOn base: Attributes) -> Attributes {
+        var finalAttrs = base // finalAttrs 包含来自 base 的 .paragraphStyle (可能是父样式或文档默认)
         
-        // 获取基础的 NSParagraphStyle，如果不存在则新建一个
+        // 获取基础的 NSParagraphStyle 进行修改
         var pStyleToModify = (base[.paragraphStyle] as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle
-        if pStyleToModify == nil {
+        if pStyleToModify == nil { // 如果 base 中没有 .paragraphStyle，新建一个
             pStyleToModify = NSMutableParagraphStyle()
-            pStyleToModify!.alignment = .natural
+            pStyleToModify!.alignment = .natural // 设置基础默认值
             pStyleToModify!.lineHeightMultiple = 1.0
-            // print("StyleParser buildParagraphAttributes: Created new NSMutableParagraphStyle as base.")
+            pStyleToModify!.defaultTabInterval = 36.0 // 设置一个合理的默认制表符间隔 (0.5 inch)
         }
         
-        // 将当前样式直接定义的原子段落属性应用到 pStyleToModify 上
+        // --- 应用原子对齐、间距、行高属性 ---
         if let alignmentRaw = atoms[AtomicStyleKeys.alignment] as? Int,
            let alignment = NSTextAlignment(rawValue: alignmentRaw) {
             pStyleToModify!.alignment = alignment
@@ -667,70 +710,104 @@ class StyleParser {
         if let spacingAfter = atoms[AtomicStyleKeys.paragraphSpacingAfter] as? CGFloat {
             pStyleToModify!.paragraphSpacing = spacingAfter
         }
-        if let lineHeightMultiple = atoms[AtomicStyleKeys.lineHeightMultiple] as? CGFloat {
-            pStyleToModify!.lineHeightMultiple = lineHeightMultiple
-        }
-        if let minLineHeight = atoms[AtomicStyleKeys.minimumLineHeight] as? CGFloat {
-            pStyleToModify!.minimumLineHeight = minLineHeight
-        }
-        if let maxLineHeight = atoms[AtomicStyleKeys.maximumLineHeight] as? CGFloat {
-            pStyleToModify!.maximumLineHeight = maxLineHeight
-        }
-        if let lineSpacing = atoms[AtomicStyleKeys.lineSpacing] as? CGFloat {
-            pStyleToModify!.lineSpacing = lineSpacing
-        }
-        
-        // 缩进处理：如果原子属性中定义了，则覆盖
-        // 优先使用 firstLineHeadIndent (如果定义了)
-        // 否则，headIndent
-        var headIndentApplied = false
-        if let hi = atoms[AtomicStyleKeys.headIndent] as? CGFloat {
-            pStyleToModify!.headIndent = hi
-            headIndentApplied = true
-        }
-        if let flhi = atoms[AtomicStyleKeys.firstLineHeadIndent] as? CGFloat {
-            pStyleToModify!.firstLineHeadIndent = flhi
-        } else if headIndentApplied { // 如果设置了headIndent但没设置firstLineHeadIndent
-             // 则首行与后续行缩进一致 (NSParagraphStyle中firstLineHeadIndent是相对headIndent的偏移，
-             // 但我们这里存储的是绝对值，所以如果只有headIndent，firstLineHeadIndent应该等于它)
-             // 不，更正：如果 parseAtomicParagraphProperties 正确计算了 firstLineHeadIndent (如它所做)
-             // 那么这里就不需要这个 else if 了。如果 atoms 中有 firstLineHeadIndent 就用，没有就用继承的。
-        }
-        // ... 应用其他原子段落属性 ...
+        if let lineHeightMultiple = atoms[AtomicStyleKeys.lineHeightMultiple] as? CGFloat { pStyleToModify!.lineHeightMultiple = lineHeightMultiple }
+        if let minLineHeight = atoms[AtomicStyleKeys.minimumLineHeight] as? CGFloat { pStyleToModify!.minimumLineHeight = minLineHeight }
+        if let maxLineHeight = atoms[AtomicStyleKeys.maximumLineHeight] as? CGFloat { pStyleToModify!.maximumLineHeight = maxLineHeight }
+        if let lineSpacing = atoms[AtomicStyleKeys.lineSpacing] as? CGFloat { pStyleToModify!.lineSpacing = lineSpacing }
 
-        if let finalPStyle = pStyleToModify {
-            finalAttrs[.paragraphStyle] = finalPStyle.copy()
+
+        // --- **高亮修正点1: 应用原子缩进属性** ---
+        // 直接检查原子字典中是否有定义，如果有，就用原子值覆盖继承值
+        if let headIndentAtom = atoms[AtomicStyleKeys.headIndent] as? CGFloat {
+            pStyleToModify!.headIndent = headIndentAtom
+        }
+        // 如果原子字典中没有对应的键，pStyleToModify 会保留从 base 继承的值。
+        // 注意：确保 parseAtomicParagraphProperties 在计算这些原子值时逻辑是正确的！
+
+
+        // --- **高亮修正点2: 应用原子制表位数据** ---
+        if let tabStopsDataAtom = atoms[AtomicStyleKeys.tabStopsData] as? [(type: String, positionInPoints: CGFloat)] {
+            // 如果原子属性中明确定义了制表位 (即使是空数组)，就用它们替换掉所有继承的制表位。
+            var nsTextTabs: [NSTextTab] = []
+            for tabData in tabStopsDataAtom {
+                let alignment = mapTabAlignment(tabData.type) // 使用辅助函数
+                let options: [NSTextTab.OptionKey: Any] = [:]
+                // NSTextTab 的 location 是 CGFloat，单位是 points
+                nsTextTabs.append(NSTextTab(textAlignment: alignment, location: tabData.positionInPoints, options: options))
+            }
+            
+            // 设置解析到的特定制表位
+            pStyleToModify!.tabStops = nsTextTabs
+            print("  buildParagraphAttributes: SUCCESSFULLY SET tabStops to \(nsTextTabs)")
+            // 当有显式 tabStops 时， defaultTabInterval 通常不再起主要作用，
+            // 但 UIKit/AppKit 的行为可能略有不同，保持默认或设为0都可以考虑。
+            // pStyleToModify!.defaultTabInterval = 0
+            
+            
+             print("  buildParagraphAttributes: Applied tabStopsDataAtom, new tabStops: \(nsTextTabs)")
+                  // 当有显式 tabStops 时，defaultTabInterval 的影响可能减弱，但保留它通常无害。
+                  // 如果 nsTextTabs 为空 (来自 XML 的空 <w:tabs/>)，这意味着没有显式制表位，应依赖 defaultTabInterval。
+                  if nsTextTabs.isEmpty {
+                       print("  buildParagraphAttributes: tabStopsDataAtom was empty, relying on defaultTabInterval: \(pStyleToModify!.defaultTabInterval)")
+                  }
+            
+        } else {
+            // 如果原子属性中 *没有* 定义 tabStopsData，那么 pStyleToModify 会保留从 base 继承的 tabStops。
+            // 这通常是期望的行为（例如，常规段落继承文档默认制表位）。
+            // 对于列表项，我们期望 numbering.xml 中一定定义了所需的制表位，
+            // 所以这个 else 分支对于列表项来说理论上不应该执行（除非解析XML失败）。
+            pStyleToModify!.tabStops = [] // 清除所有继承的显式制表位
+                   if pStyleToModify!.defaultTabInterval <= 0 { // 确保有一个有效的默认间隔
+                       pStyleToModify!.defaultTabInterval = 36.0
+                       // print("    Set defaultTabInterval to 36.0")
+                   }
+        }
+
+
+        // --- 应用段落底纹颜色指令 (传递给 DocParser) ---
+        // (这部分逻辑看起来是正确的，用于传递信息)
+        if let hexAtom = atoms[AtomicStyleKeys.paraBackgroundColorHex] as? String {
+            finalAttrs[ExtendedDocxStyleAttributes.paragraphBackgroundColorHex] = hexAtom
+            finalAttrs.removeValue(forKey: ExtendedDocxStyleAttributes.paragraphBackgroundThemeColorName)
+            finalAttrs.removeValue(forKey: ExtendedDocxStyleAttributes.paragraphBackgroundThemeColorTint)
+            finalAttrs.removeValue(forKey: ExtendedDocxStyleAttributes.paragraphBackgroundThemeColorShade)
+        } else if let themeNameAtom = atoms[AtomicStyleKeys.paraBackgroundThemeColorName] as? String {
+            finalAttrs[ExtendedDocxStyleAttributes.paragraphBackgroundThemeColorName] = themeNameAtom
+            if let tintAtom = atoms[AtomicStyleKeys.paraBackgroundThemeColorTint] as? String {
+                finalAttrs[ExtendedDocxStyleAttributes.paragraphBackgroundThemeColorTint] = tintAtom
+            } else {
+                finalAttrs.removeValue(forKey: ExtendedDocxStyleAttributes.paragraphBackgroundThemeColorTint)
+            }
+            if let shadeAtom = atoms[AtomicStyleKeys.paraBackgroundThemeColorShade] as? String {
+                finalAttrs[ExtendedDocxStyleAttributes.paragraphBackgroundThemeColorShade] = shadeAtom
+            } else {
+                finalAttrs.removeValue(forKey: ExtendedDocxStyleAttributes.paragraphBackgroundThemeColorShade)
+            }
+            // 清除可能从 base 继承的直接十六进制底纹指令
+             if base[AtomicStyleKeys.paraBackgroundThemeColorName] == nil {
+                finalAttrs.removeValue(forKey: ExtendedDocxStyleAttributes.paragraphBackgroundColorHex)
+             }
         }
         
-        // << 新增：传递段落底纹颜色指令 >>
-           // 优先级：直接十六进制 > 主题颜色指令
-           if let hexAtom = atoms[AtomicStyleKeys.paraBackgroundColorHex] as? String {
-               finalAttrs[ExtendedDocxStyleAttributes.paragraphBackgroundColorHex] = hexAtom
-               // 清除可能从 base 继承的主题底纹指令
-               finalAttrs.removeValue(forKey: ExtendedDocxStyleAttributes.paragraphBackgroundThemeColorName)
-               finalAttrs.removeValue(forKey: ExtendedDocxStyleAttributes.paragraphBackgroundThemeColorTint)
-               finalAttrs.removeValue(forKey: ExtendedDocxStyleAttributes.paragraphBackgroundThemeColorShade)
-           } else if let themeNameAtom = atoms[AtomicStyleKeys.paraBackgroundThemeColorName] as? String {
-               finalAttrs[ExtendedDocxStyleAttributes.paragraphBackgroundThemeColorName] = themeNameAtom
-               if let tintAtom = atoms[AtomicStyleKeys.paraBackgroundThemeColorTint] as? String {
-                   finalAttrs[ExtendedDocxStyleAttributes.paragraphBackgroundThemeColorTint] = tintAtom
-               } else {
-                   finalAttrs.removeValue(forKey: ExtendedDocxStyleAttributes.paragraphBackgroundThemeColorTint)
-               }
-               if let shadeAtom = atoms[AtomicStyleKeys.paraBackgroundThemeColorShade] as? String {
-                   finalAttrs[ExtendedDocxStyleAttributes.paragraphBackgroundThemeColorShade] = shadeAtom
-               } else {
-                   finalAttrs.removeValue(forKey: ExtendedDocxStyleAttributes.paragraphBackgroundThemeColorShade)
-               }
-               // 清除可能从 base 继承的直接十六进制底纹指令
-                if base[AtomicStyleKeys.paraBackgroundThemeColorName] == nil { // 仅当 base 中没有主题底纹时才清除
-                   finalAttrs.removeValue(forKey: ExtendedDocxStyleAttributes.paragraphBackgroundColorHex)
-                }
-           }
-           // 如果 atoms 中既没有 hex 也没有 theme，则 finalAttrs 会保留 base 中的底纹颜色信息
-           // << 段落底纹指令传递结束 >>
-        
+        // --- 将修改后的 NSParagraphStyle 写回 finalAttrs ---
+        // 确保获取的是最终修改后的不可变副本
+        if let finalPStyle = pStyleToModify?.copy() as? NSParagraphStyle {
+            finalAttrs[.paragraphStyle] = finalPStyle
+        } else {
+            // 如果 pStyleToModify 意外为 nil (理论上不应发生)，确保 finalAttrs 中没有旧的 .paragraphStyle
+            finalAttrs.removeValue(forKey: .paragraphStyle)
+        }
         return finalAttrs
+    }
+    private func mapTabAlignment(_ type: String) -> NSTextAlignment {
+        switch type.lowercased() {
+        case "left", "start": return .left
+        case "right", "end": return .right
+        case "center": return .center
+        case "decimal": return .right // NSTextAlignment 支持 .decimal
+        // "bar" 类型没有直接映射
+        default: return .left // 默认
+        }
     }
     
     private func mapHighlightColor(_ value: String) -> UIColor? {
